@@ -1796,49 +1796,88 @@ async function printInvoice(invoiceId){
     const formattedTotalUSD = totalUSD != null ? Number(totalUSD).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
     const formattedTotalLBP = totalLBP != null ? Number(totalLBP).toLocaleString('en-US') : '—';
 
-    // Instead of building HTML here, reuse the on-screen preview generator
-    // so printed output from History matches the preview exactly.
-    const consumptionValue = (priceUsd != null ? Number(priceUsd) : 0) * usage;
+    // Build receipt HTML directly without using the form
+    const subscriptionTitle = settings.subscriptionName || 'اشتراك الكهرباء';
+    const invoiceNumber = inv.id || 'R000000';
+    const date = inv.date || new Date().toISOString().slice(0,10);
+    const baseCur = inv.pricingMode || inv.base_currency || 'USD';
+    const extraCur = extrasArr[0]?.currency || inv.extra_currency || 'USD';
+    const extraNote = extrasArr[0]?.label || inv.extra_note || '';
 
-    // backup form state
-    const backup = {};
-    const fields = ['#inv_prev','#inv_curr','#inv_price_kwh','#inv_monthly','#inv_extra','#inv_extra_currency','#inv_extra_note','#inv_discount','#inv_base_currency','#inv_date','#inv_customer'];
-    fields.forEach(k=>{ const el = qs(k); backup[k]= el ? el.value : null; });
-    const backupSelected = (typeof selectedCustomerIndex !== 'undefined') ? selectedCustomerIndex : -1;
+    // format values for display according to requirements
+    const formattedPrice = Number(displayPrice).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const formattedMonthly = Number(monthly).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
 
-    // ensure customer entry exists in customers[] so renderReceiptPreview shows correct name
-    let addedTempCustomer = false; let custIndex = customers.findIndex(c=> String(c.id) === String(inv.customerId));
-    if(custIndex === -1){ customers.push({ id: inv.customerId || ('_tmp_'+Math.random().toString(36).slice(2)), name: inv.customerName||'', phone: inv.customerPhone||'' }); custIndex = customers.length-1; addedTempCustomer = true; }
+    const receiptHtml = `
+    <!-- Header -->
+    <div style="text-align:center;margin-bottom:8px;border-bottom:1px solid #333;padding-bottom:6px">
+      <div class="receipt-title">${subscriptionTitle}</div>
+      <div class="receipt-subtitle">إيصال سداد</div>
+      <div class="receipt-meta">${date} • رقم: ${invoiceNumber}</div>
+    </div>
 
-    try{
-      // populate form with invoice values
-      if(qs('#inv_prev')) qs('#inv_prev').value = inv.prev != null ? inv.prev : '';
-      if(qs('#inv_curr')) qs('#inv_curr').value = inv.curr != null ? inv.curr : '';
-      if(qs('#inv_price_kwh')) qs('#inv_price_kwh').value = priceUsd != null ? priceUsd : (inv.price_kwh != null ? inv.price_kwh : qs('#inv_price_kwh').value);
-      if(qs('#inv_monthly')) qs('#inv_monthly').value = monthly || '';
-      if(qs('#inv_extra')) qs('#inv_extra').value = extraTotal || 0;
-      if(qs('#inv_extra_currency')) qs('#inv_extra_currency').value = extrasArr[0]?.currency || inv.extra_currency || qs('#inv_extra_currency').value;
-      if(qs('#inv_extra_note')) qs('#inv_extra_note').value = extrasArr[0]?.label || inv.extra_note || '';
-      if(qs('#inv_discount')) qs('#inv_discount').value = inv.discount || 0;
-      if(qs('#inv_base_currency')) qs('#inv_base_currency').value = inv.pricingMode || inv.base_currency || qs('#inv_base_currency').value;
-      if(qs('#inv_date')) qs('#inv_date').value = inv.date || qs('#inv_date').value;
-      if(qs('#inv_customer')) qs('#inv_customer').value = custIndex;
-      selectedCustomerIndex = custIndex;
+    <!-- Customer Info (compact) -->
+    <div style="margin-bottom:6px;padding:2px 0;background:transparent;">
+      <div class="receipt-customer">
+        <span><strong>الاسم:</strong> ${cName}</span>
+        ${inv.customerPhone?`<span class="sep">|</span><span><strong>الهاتف:</strong> ${inv.customerPhone}</span>`:''}
+      </div>
+    </div>
 
-      // regenerate preview and capture its HTML
-      if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
-      const receiptHtml = qs('#receipt').innerHTML;
+    <!-- Consumption table (prev first, removed total column) -->
+    <div style="margin-bottom:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:10px;">
+        <thead>
+          <tr>
+            <th style="padding:3px 6px;border:1px solid #444">العداد السابق</th>
+            <th style="padding:3px 6px;border:1px solid #444">العداد الحالي</th>
+            <th style="padding:3px 6px;border:1px solid #444">الاستهلاك (ك.و.س)</th>
+            <th style="padding:3px 6px;border:1px solid #444">سعر الكيلو</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(prev).toLocaleString('en-US')}</td>
+            <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(curr).toLocaleString('en-US')}</td>
+            <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(usage).toLocaleString('en-US')}</td>
+            <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${formattedPrice} USD</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
-      // open print window with the preview HTML
-      openPrintWindow(receiptHtml);
-    }finally{
-      // restore backed-up form state
-      fields.forEach(k=>{ const el = qs(k); if(el && backup[k] != null) el.value = backup[k]; });
-      selectedCustomerIndex = backupSelected;
-      if(addedTempCustomer) customers.splice(custIndex,1);
-      // refresh preview to original state
-      if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
-    }
+    <!-- Fees row: المقطوعة | دفعات إضافية | خصم -->
+    <div style="margin-bottom:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:10px;">
+        <tr>
+          <th style="padding:3px 6px;border:1px solid #444">المقطوعة</th>
+          <th style="padding:3px 6px;border:1px solid #444">دفعات إضافية</th>
+          <th style="padding:3px 6px;border:1px solid #444">خصم</th>
+        </tr>
+        <tr>
+          <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(monthly).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} ${baseCur}</td>
+          <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">
+            ${Number(extraTotal||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} ${extraCur}
+            ${ extraNote ? `<div style="font-size:9px;margin-top:4px;text-align:right;direction:rtl;color:inherit">ملاحظة: ${extraNote}</div>` : '' }
+          </td>
+          <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(discount||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} ${baseCur}</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- Total -->
+    <div style="margin-bottom:6px;padding:6px;border:1px solid #444;border-radius:4px;background:#fff">
+      <div style="text-align:right;font-weight:800;font-size:13px;">الإجمالي: <span style="direction:ltr" lang="en">LBP ${formattedTotalLBP}</span>  / <span style="direction:ltr" lang="en">USD ${formattedTotalUSD}</span></div>
+    </div>
+
+    <!-- Footer note -->
+    <div style="text-align:center;margin-top:6px;padding:10px 12px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:6px;font-size:13px;color:#764c00;font-weight:700;line-height:1.4">
+      الرجاء عدم التأخير في تسديد الاشتراك، حرصًا على استمرارية الخدمة وعدم اضطرارنا لقطع الاشتراك.
+    </div>
+    `;
+
+    // open print window with the receipt HTML
+    openPrintWindow(receiptHtml);
   } catch (err) {
     console.error('printInvoice error:', err);
     alert('تعذّر فتح الوصل للطباعة: ' + (err.message || err));
