@@ -44,6 +44,35 @@
   .customer-option:hover{background:#f5f5f5}
         #customer_dropdown{border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}
 
+        /* Pagination Styles */
+        .page-btn {
+          min-width: 36px;
+          height: 36px;
+          border-radius: 6px;
+          font-size: 13px;
+          font-weight: 600;
+          transition: all 0.2s ease;
+        }
+        .page-btn:hover:not(:disabled) {
+          background: var(--primary);
+          color: white;
+          transform: translateY(-1px);
+        }
+        .page-btn.active {
+          background: var(--primary);
+          color: white;
+          box-shadow: 0 2px 4px rgba(155, 28, 28, 0.3);
+        }
+        .page-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .pagination-ellipsis {
+          padding: 8px 4px;
+          color: var(--muted);
+          font-weight: 600;
+        }
+
         /* Receipt visual improvements: clearer, bolder fonts */
         #printArea, #receipt, #receipt * {
             color: #000 !important;
@@ -408,14 +437,48 @@
     <div class="row">
       <input id="h_search" placeholder="ابحث بالزبون أو رقم الفاتورة" style="flex:1">
       <input id="h_month" type="month">
+      <button class="btn primary" id="btnPrintAllMonth" style="display:none">طباعة الكل لهذا الشهر</button>
+    </div>
+    <div id="printProgress" class="card" style="display:none; margin-top:8px">
+      <div style="text-align:center">
+        <div id="printProgressText">جاري الطباعة...</div>
+        <div id="printProgressBar" style="background:#f0f0f0; height:20px; border-radius:10px; margin-top:8px; overflow:hidden">
+          <div id="printProgressFill" style="background:var(--primary); height:100%; width:0%; transition:width 0.3s ease"></div>
+        </div>
+      </div>
     </div>
     <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:12px">
+        <div>
+          <label style="margin:0; font-size:13px">عدد العناصر في الصفحة:</label>
+          <select id="pageSize" style="width:auto; margin-right:8px">
+            <option value="10">10</option>
+            <option value="25" selected>25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+        <div id="paginationInfo" class="muted" style="font-size:13px"></div>
+      </div>
       <table id="historyTable">
         <thead>
           <tr><th>#</th><th>التاريخ</th><th>الزبون</th><th>الاستهلاك</th><th>الإجمالي USD</th><th>الإجمالي LBP</th></tr>
         </thead>
         <tbody></tbody>
       </table>
+    </div>
+    
+    <!-- Pagination Controls -->
+    <div id="paginationControls" class="card" style="display:none; margin-top:12px">
+      <div class="row" style="justify-content:center; align-items:center; gap:8px">
+        <button id="firstPage" class="btn ghost" disabled>الأولى</button>
+        <button id="prevPage" class="btn ghost" disabled>السابقة</button>
+        
+        <div id="pageNumbers" style="display:flex; gap:4px; align-items:center"></div>
+        
+        <button id="nextPage" class="btn ghost" disabled>التالية</button>
+        <button id="lastPage" class="btn ghost" disabled>الأخيرة</button>
+      </div>
     </div>
   </section>
 
@@ -767,6 +830,12 @@ let invoices = [];
 let expenses = {}; // by 'YYYY-MM'
 let nextInvoiceNumber = 1; // رقم الإيصال التالي
 let isInitialized = false;
+
+// ------- Pagination State -------
+let currentPage = 1;
+let pageSize = 25;
+let totalPages = 1;
+let filteredInvoices = [];
 
 // ------- Initialize App -------
 async function initializeApp() {
@@ -1455,20 +1524,44 @@ qs('#btnSaveInvoice').onclick = async ()=>{
 function renderHistory(){
   const tbody = qs('#historyTable tbody'); 
   tbody.innerHTML = '';
+  
+  // تطبيق الفلاتر
   let list = invoices.slice().sort((a,b)=> b.date.localeCompare(a.date));
-
   const q = (qs('#h_search').value||'').toLowerCase();
   if(q) list = list.filter(v => (v.customerName+v.id).toLowerCase().includes(q));
-
   const m = qs('#h_month').value; // YYYY-MM
   if(m) list = list.filter(v => v.date.startsWith(m));
+  
+  // حفظ القائمة المفلترة
+  filteredInvoices = list;
+  
+  // حساب Pagination
+  totalPages = Math.ceil(list.length / pageSize);
+  if (currentPage > totalPages && totalPages > 0) {
+    currentPage = totalPages;
+  }
+  if (currentPage < 1) currentPage = 1;
+  
+  // الحصول على العناصر للصفحة الحالية
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+  const pageInvoices = list.slice(startIndex, endIndex);
 
-  list.forEach(v=>{
+  // إظهار/إخفاء زر طباعة الكل حسب وجود فواتير في الشهر المحدد
+  const printAllBtn = qs('#btnPrintAllMonth');
+  if (m && list.length > 0) {
+    printAllBtn.style.display = 'inline-block';
+    printAllBtn.textContent = `طباعة الكل لهذا الشهر (${list.length})`;
+  } else {
+    printAllBtn.style.display = 'none';
+  }
+
+  // عرض الفواتير للصفحة الحالية
+  pageInvoices.forEach(v=>{
     const tr = document.createElement('tr');
     console.log('renderHistory row:', v.id, v);
     
     // حساب الإجماليات إذا لم تكن موجودة (للبيانات القديمة)
-    // prefer stored totals; if missing, compute from components
     const normalized = normalizeInvoiceTotals(v);
     let totalUSD = normalized.usd;
     let totalLBP = normalized.lbp;
@@ -1499,6 +1592,118 @@ function renderHistory(){
     `;
     tbody.appendChild(tr);
   });
+  
+  // تحديث Pagination
+  updatePagination();
+}
+
+// دالة تحديث Pagination
+function updatePagination() {
+  const paginationControls = qs('#paginationControls');
+  const paginationInfo = qs('#paginationInfo');
+  const pageNumbers = qs('#pageNumbers');
+  
+  // إظهار/إخفاء Pagination
+  if (totalPages <= 1) {
+    paginationControls.style.display = 'none';
+    paginationInfo.textContent = `عرض ${filteredInvoices.length} من ${filteredInvoices.length} فاتورة`;
+    return;
+  }
+  
+  paginationControls.style.display = 'block';
+  
+  // معلومات Pagination
+  const startItem = (currentPage - 1) * pageSize + 1;
+  const endItem = Math.min(currentPage * pageSize, filteredInvoices.length);
+  paginationInfo.textContent = `عرض ${startItem}-${endItem} من ${filteredInvoices.length} فاتورة`;
+  
+  // تحديث أزرار التنقل
+  qs('#firstPage').disabled = currentPage === 1;
+  qs('#prevPage').disabled = currentPage === 1;
+  qs('#nextPage').disabled = currentPage === totalPages;
+  qs('#lastPage').disabled = currentPage === totalPages;
+  
+  // إنشاء أرقام الصفحات
+  pageNumbers.innerHTML = '';
+  
+  // منطق عرض أرقام الصفحات
+  let startPage = Math.max(1, currentPage - 2);
+  let endPage = Math.min(totalPages, currentPage + 2);
+  
+  // التأكد من عرض 5 صفحات على الأقل إذا كان العدد الإجمالي أكبر
+  if (endPage - startPage < 4) {
+    if (startPage === 1) {
+      endPage = Math.min(totalPages, startPage + 4);
+    } else if (endPage === totalPages) {
+      startPage = Math.max(1, endPage - 4);
+    }
+  }
+  
+  // إضافة زر الصفحة الأولى إذا لم تكن مرئية
+  if (startPage > 1) {
+    addPageButton(1);
+    if (startPage > 2) {
+      addEllipsis();
+    }
+  }
+  
+  // إضافة أرقام الصفحات
+  for (let i = startPage; i <= endPage; i++) {
+    addPageButton(i);
+  }
+  
+  // إضافة زر الصفحة الأخيرة إذا لم تكن مرئية
+  if (endPage < totalPages) {
+    if (endPage < totalPages - 1) {
+      addEllipsis();
+    }
+    addPageButton(totalPages);
+  }
+  
+  function addPageButton(pageNum) {
+    const btn = document.createElement('button');
+    btn.className = `btn ghost page-btn ${pageNum === currentPage ? 'active' : ''}`;
+    btn.textContent = pageNum;
+    btn.onclick = () => goToPage(pageNum);
+    pageNumbers.appendChild(btn);
+  }
+  
+  function addEllipsis() {
+    const ellipsis = document.createElement('span');
+    ellipsis.className = 'pagination-ellipsis';
+    ellipsis.textContent = '...';
+    pageNumbers.appendChild(ellipsis);
+  }
+}
+
+// وظائف التنقل
+function goToPage(page) {
+  if (page >= 1 && page <= totalPages && page !== currentPage) {
+    currentPage = page;
+    renderHistory();
+  }
+}
+
+function goToFirstPage() {
+  goToPage(1);
+}
+
+function goToPrevPage() {
+  goToPage(currentPage - 1);
+}
+
+function goToNextPage() {
+  goToPage(currentPage + 1);
+}
+
+function goToLastPage() {
+  goToPage(totalPages);
+}
+
+function changePageSize() {
+  pageSize = parseInt(qs('#pageSize').value);
+  currentPage = 1; // العودة للصفحة الأولى
+  renderHistory();
 }
 // helper: open standardized print window for receipt HTML
 function openPrintWindow(innerHtml){
@@ -1640,8 +1845,93 @@ async function printInvoice(invoiceId){
   }
 }
 renderHistory();
-qs('#h_search').oninput = renderHistory;
-qs('#h_month').oninput = renderHistory;
+qs('#h_search').oninput = () => {
+  currentPage = 1; // العودة للصفحة الأولى عند البحث
+  renderHistory();
+};
+qs('#h_month').oninput = () => {
+  currentPage = 1; // العودة للصفحة الأولى عند تغيير الشهر
+  renderHistory();
+};
+
+// مستمعي أحداث Pagination
+qs('#pageSize').onchange = changePageSize;
+qs('#firstPage').onclick = goToFirstPage;
+qs('#prevPage').onclick = goToPrevPage;
+qs('#nextPage').onclick = goToNextPage;
+qs('#lastPage').onclick = goToLastPage;
+
+// طباعة جميع الفواتير للشهر المحدد
+qs('#btnPrintAllMonth').onclick = async ()=>{
+  const month = qs('#h_month').value;
+  if (!month) {
+    alert('يرجى اختيار شهر أولاً');
+    return;
+  }
+
+  // الحصول على الفواتير للشهر المحدد (استخدام القائمة المفلترة الحالية)
+  let monthInvoices = filteredInvoices.filter(v => v.date && v.date.startsWith(month));
+  
+  // ترتيب الفواتير حسب رقم الفاتورة تصاعدياً
+  monthInvoices.sort((a, b) => {
+    const aNum = parseInt(a.id.replace('R', '')) || 0;
+    const bNum = parseInt(b.id.replace('R', '')) || 0;
+    return aNum - bNum;
+  });
+
+  if (monthInvoices.length === 0) {
+    alert('لا توجد فواتير في هذا الشهر');
+    return;
+  }
+
+  // إظهار مؤشر التقدم
+  const progressDiv = qs('#printProgress');
+  const progressText = qs('#printProgressText');
+  const progressFill = qs('#printProgressFill');
+  const printBtn = qs('#btnPrintAllMonth');
+  
+  progressDiv.style.display = 'block';
+  printBtn.disabled = true;
+  printBtn.textContent = 'جاري الطباعة...';
+
+  let printedCount = 0;
+  const totalCount = monthInvoices.length;
+
+  try {
+    for (let i = 0; i < monthInvoices.length; i++) {
+      const invoice = monthInvoices[i];
+      
+      // تحديث مؤشر التقدم
+      progressText.textContent = `جاري طباعة الفاتورة ${i + 1} من ${totalCount} (${invoice.id})`;
+      progressFill.style.width = `${((i + 1) / totalCount) * 100}%`;
+      
+      // طباعة الفاتورة
+      await printInvoice(invoice.id);
+      printedCount++;
+      
+      // مهلة بين كل فاتورة (1000ms)
+      if (i < monthInvoices.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    // إخفاء مؤشر التقدم
+    progressDiv.style.display = 'none';
+    printBtn.disabled = false;
+    printBtn.textContent = `طباعة الكل لهذا الشهر (${totalCount})`;
+    
+    alert(`تم طباعة ${printedCount} فاتورة بنجاح`);
+    
+  } catch (error) {
+    console.error('خطأ في طباعة الفواتير:', error);
+    alert(`حدث خطأ أثناء الطباعة. تم طباعة ${printedCount} من ${totalCount} فاتورة`);
+    
+    // إخفاء مؤشر التقدم
+    progressDiv.style.display = 'none';
+    printBtn.disabled = false;
+    printBtn.textContent = `طباعة الكل لهذا الشهر (${totalCount})`;
+  }
+};
 
 // ------- Reports & Expenses -------
 function renderExpensesTable(key){
