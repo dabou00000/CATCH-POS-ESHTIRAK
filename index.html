@@ -44,35 +44,6 @@
   .customer-option:hover{background:#f5f5f5}
         #customer_dropdown{border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}
 
-        /* Pagination Styles */
-        .page-btn {
-          min-width: 36px;
-          height: 36px;
-          border-radius: 6px;
-          font-size: 13px;
-          font-weight: 600;
-          transition: all 0.2s ease;
-        }
-        .page-btn:hover:not(:disabled) {
-          background: var(--primary);
-          color: white;
-          transform: translateY(-1px);
-        }
-        .page-btn.active {
-          background: var(--primary);
-          color: white;
-          box-shadow: 0 2px 4px rgba(155, 28, 28, 0.3);
-        }
-        .page-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-        .pagination-ellipsis {
-          padding: 8px 4px;
-          color: var(--muted);
-          font-weight: 600;
-        }
-
         /* Receipt visual improvements: clearer, bolder fonts */
         #printArea, #receipt, #receipt * {
             color: #000 !important;
@@ -257,9 +228,16 @@
   // Export Data
   qs('#btnExportData').onclick = async ()=>{
     try{
-      const customers = await DB.load('customers', []);
-      const invoices = await DB.load('invoices', []);
-      const expenses = await DB.getExpenses(new Date().toISOString().slice(0,7));
+      const customersData = await RTDB.get('customers');
+      const invoicesData = await RTDB.get('invoices');
+      const expensesData = await RTDB.get('expenses');
+      
+      const customers = customersData ? Object.keys(customersData).map(id => ({ id, ...customersData[id] })) : [];
+      const invoices = invoicesData ? Object.keys(invoicesData).map(id => ({ id, ...invoicesData[id] })) : [];
+      const expenses = expensesData ? Object.keys(expensesData).flatMap(month => 
+        Object.keys(expensesData[month]).map(id => ({ id, ...expensesData[month][id] }))
+      ) : [];
+      
       const payload = { customers, invoices, expenses, exportedAt: new Date().toISOString() };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
@@ -281,35 +259,26 @@
       const counts = { customers: (json.customers||[]).length, invoices: (json.invoices||[]).length, expenses: (json.expenses||[]).length };
       if(!confirm(`سيتم استيراد ${counts.customers} زبون، ${counts.invoices} وصل، ${counts.expenses} مصروف. متابعة؟`)) return;
       // import: add with auto ids
-      if(DB.useFirebase){
-        // import customers
-        for(const c of (json.customers||[])){
-          await window.firebase.addDoc(window.firebase.collection(window.firebase.db, 'tenants/default/customers'), c);
-        }
-        for(const inv of (json.invoices||[])){
-          await window.firebase.addDoc(window.firebase.collection(window.firebase.db, 'tenants/default/invoices'), inv);
-        }
-        for(const ex of (json.expenses||[])){
-          await window.firebase.addDoc(window.firebase.collection(window.firebase.db, 'tenants/default/expenses'), ex);
-        }
-        // log
-        const log = { action:'import', counts, by: (window.currentUser&&window.currentUser.uid)||null, at: window.firebase.serverTimestamp() };
-        await window.firebase.addDoc(window.firebase.collection(window.firebase.db, 'tenants/default/adminLogs'), log);
-      } else {
-        // local
-        const localCustomers = LocalDB.load('customers',[]).concat(json.customers||[]);
-        LocalDB.save('customers', localCustomers);
-        const localInvoices = LocalDB.load('invoices',[]).concat(json.invoices||[]);
-        LocalDB.save('invoices', localInvoices);
-        const localExpenses = LocalDB.load('expenses',{});
-        const month = new Date().toISOString().slice(0,7);
-        localExpenses[month] = (localExpenses[month]||[]).concat(json.expenses||[]);
-        LocalDB.save('expenses', localExpenses);
-        // local log
-        const logs = LocalDB.load('adminLogs',[]); logs.push({ action:'import', counts, by:'local', at:new Date().toISOString() }); LocalDB.save('adminLogs', logs);
+      // import customers
+      for(const c of (json.customers||[])){
+        const customerId = c.id || Date.now().toString() + Math.random().toString(36).substr(2, 9);
+        await RTDB.set(`customers/${customerId}`, { ...c, id: customerId });
       }
-      alert('تم الاستيراد');
-      await reloadInvoices(); renderCustomers();
+      for(const inv of (json.invoices||[])){
+        const invoiceId = inv.id || Date.now().toString() + Math.random().toString(36).substr(2, 9);
+        await RTDB.set(`invoices/${invoiceId}`, { ...inv, id: invoiceId });
+      }
+      for(const ex of (json.expenses||[])){
+        const expenseId = ex.id || Date.now().toString() + Math.random().toString(36).substr(2, 9);
+        const period = ex.period || monthKey(new Date());
+        await RTDB.set(`expenses/${period}/${expenseId}`, { ...ex, id: expenseId });
+      }
+      // log
+      const log = { action:'import', counts, by: (window.currentUser&&window.currentUser.uid)||null, at: Date.now() };
+      const logId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+      await RTDB.set(`adminLogs/${logId}`, log);
+      
+      alert('تم الاستيراد بنجاح');
     }catch(e){ console.error(e); alert('صيغة غير مدعومة أو فشل القراءة'); }
   };
 
@@ -320,22 +289,18 @@
     if(!confirm('هل أنت متأكد من حذف كل البيانات؟ لا يمكن التراجع.')) return;
     const btn = qs('#btnDeleteData'); btn.disabled = true; btn.textContent='جارٍ الحذف...';
     try{
-      if(DB.useFirebase){
-        // delete invoices, customers, expenses (caution: not settings)
-        const invs = await window.firebase.getDocs(window.firebase.query(window.firebase.collection(window.firebase.db, 'tenants/default/invoices')));
-        for(const d of invs.docs) await window.firebase.deleteDoc(window.firebase.doc(window.firebase.db, 'tenants/default/invoices', d.id));
-        const custs = await window.firebase.getDocs(window.firebase.query(window.firebase.collection(window.firebase.db, 'tenants/default/customers')));
-        for(const d of custs.docs) await window.firebase.deleteDoc(window.firebase.doc(window.firebase.db, 'tenants/default/customers', d.id));
-        const exs = await window.firebase.getDocs(window.firebase.query(window.firebase.collection(window.firebase.db, 'tenants/default/expenses')));
-        for(const d of exs.docs) await window.firebase.deleteDoc(window.firebase.doc(window.firebase.db, 'tenants/default/expenses', d.id));
-        await window.firebase.addDoc(window.firebase.collection(window.firebase.db, 'tenants/default/adminLogs'), { action:'delete_all', by:(window.currentUser&&window.currentUser.uid)||null, at: window.firebase.serverTimestamp() });
-      } else {
-        LocalDB.save('customers', []);
-        LocalDB.save('invoices', []);
-        LocalDB.save('expenses', {});
-        const logs = LocalDB.load('adminLogs',[]); logs.push({ action:'delete_all', by:'local', at:new Date().toISOString() }); LocalDB.save('adminLogs', logs);
-      }
-      await reloadInvoices(); renderCustomers(); alert('تم حذف البيانات بنجاح');
+      // delete invoices, customers, expenses (caution: not settings)
+      await RTDB.remove('invoices');
+      await RTDB.remove('customers');
+      await RTDB.remove('expenses');
+      await RTDB.remove('reports');
+      await RTDB.remove('closedMonths');
+      
+      // log
+      const log = { action:'delete_all', by:(window.currentUser&&window.currentUser.uid)||null, at: Date.now() };
+      const logId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+      await RTDB.set(`adminLogs/${logId}`, log);
+      alert('تم حذف البيانات بنجاح');
     }catch(e){ console.error(e); alert('فشل الحذف: '+e.message); }
     finally{ btn.disabled=false; btn.textContent='حذف البيانات'; }
   };
@@ -437,48 +402,15 @@
     <div class="row">
       <input id="h_search" placeholder="ابحث بالزبون أو رقم الفاتورة" style="flex:1">
       <input id="h_month" type="month">
-      <button class="btn primary" id="btnPrintAllMonth" style="display:none">طباعة الكل لهذا الشهر</button>
-    </div>
-    <div id="printProgress" class="card" style="display:none; margin-top:8px">
-      <div style="text-align:center">
-        <div id="printProgressText">جاري الطباعة...</div>
-        <div id="printProgressBar" style="background:#f0f0f0; height:20px; border-radius:10px; margin-top:8px; overflow:hidden">
-          <div id="printProgressFill" style="background:var(--primary); height:100%; width:0%; transition:width 0.3s ease"></div>
-        </div>
-      </div>
+      <button class="btn primary" id="btnPrintAll">طباعة الكل</button>
     </div>
     <div class="card">
-      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:12px">
-        <div>
-          <label style="margin:0; font-size:13px">عدد العناصر في الصفحة:</label>
-          <select id="pageSize" style="width:auto; margin-right:8px">
-            <option value="10">10</option>
-            <option value="25" selected>25</option>
-            <option value="50">50</option>
-            <option value="100">100</option>
-          </select>
-        </div>
-        <div id="paginationInfo" class="muted" style="font-size:13px"></div>
-      </div>
       <table id="historyTable">
         <thead>
           <tr><th>#</th><th>التاريخ</th><th>الزبون</th><th>الاستهلاك</th><th>الإجمالي USD</th><th>الإجمالي LBP</th></tr>
         </thead>
         <tbody></tbody>
       </table>
-    </div>
-    
-    <!-- Pagination Controls -->
-    <div id="paginationControls" class="card" style="display:none; margin-top:12px">
-      <div class="row" style="justify-content:center; align-items:center; gap:8px">
-        <button id="firstPage" class="btn ghost" disabled>الأولى</button>
-        <button id="prevPage" class="btn ghost" disabled>السابقة</button>
-        
-        <div id="pageNumbers" style="display:flex; gap:4px; align-items:center"></div>
-        
-        <button id="nextPage" class="btn ghost" disabled>التالية</button>
-        <button id="lastPage" class="btn ghost" disabled>الأخيرة</button>
-      </div>
     </div>
   </section>
 
@@ -570,272 +502,229 @@
 
 <!-- Firebase SDK -->
 <script type="module">
-  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-import { getFirestore, connectFirestoreEmulator, collection, doc, getDoc, setDoc, getDocs, addDoc, deleteDoc, query, where, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
-  import { getAuth, connectAuthEmulator } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
+  import { getDatabase, ref, set, push, onValue, remove, update, get, child } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-database.js';
+  import { getAuth, connectAuthEmulator } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
+  import { getAnalytics, isSupported as analyticsIsSupported } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-analytics.js';
   
   // Firebase configuration
   const firebaseConfig = {
-    apiKey: "AIzaSyAiNk6EdKxF8bqrsCXsB2VWUXDaZCHVWRg",
-    authDomain: "esht-a051b.firebaseapp.com",
-    projectId: "esht-a051b",
-    storageBucket: "esht-a051b.firebasestorage.app",
-    messagingSenderId: "865178645419",
-    appId: "1:865178645419:web:7367edee5324ed9b0618ee",
-    measurementId: "G-WR9DBL2PED"
+    apiKey: "AIzaSyAsYlAqSiZknz1P4x48jRJVl6ddJW8hTps",
+    authDomain: "subs-47d7d.firebaseapp.com",
+    projectId: "subs-47d7d",
+    storageBucket: "subs-47d7d.firebasestorage.app",
+    databaseURL: "https://subs-47d7d-default-rtdb.europe-west1.firebasedatabase.app",
+    messagingSenderId: "693207080241",
+    appId: "1:693207080241:web:b63e162fcc3afcfb8ee410",
+    measurementId: "G-VS0FTNPEVK"
   };
   
   // Initialize Firebase
   const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
   const auth = getAuth(app);
+  const db = getDatabase(app);
   
-  // Development mode - connect to emulators
+  // Development mode - connect to emulators (Auth only)
   if (window.location.hostname === 'localhost') {
     try {
-      connectFirestoreEmulator(db, 'localhost', 8080);
       connectAuthEmulator(auth, 'http://localhost:9099');
     } catch (e) {
-      console.log('Emulators already connected or not available');
+      console.log('Auth emulator already connected or not available');
     }
   }
   
-  // Make Firebase available globally
-  window.firebase = { app, db, auth, collection, doc, getDoc, setDoc, getDocs, addDoc, deleteDoc, query, where, serverTimestamp };
+  // Make Firebase available globally - using Realtime Database only
+  window.firebase = { app, db, auth, analytics: null, ref, set, push, onValue, remove, update, get, child };
+  
+  // Expose RTDB helpers globally
+  window.db = db;
+  window.ref = ref;
+  window.set = set;
+  window.push = push;
+  window.onValue = onValue;
+  window.remove = remove;
+  window.update = update;
+  window.get = get;
+  window.child = child;
+
+  // Initialize Analytics if supported (avoids errors on unsupported environments)
+  let analytics = null;
+  analyticsIsSupported().then((supported) => {
+    if (supported) {
+      try {
+        analytics = getAnalytics(app);
+        window.firebase.analytics = analytics;
+      } catch (e) {
+        console.log('Analytics not initialized', e);
+      }
+    }
+  });
 </script>
 
 <script>
-// ------- Firebase Storage Helpers -------
-const FirebaseDB = {
-  async init() {
-    try {
-      // Test Firebase connection
-      await this.getSettings();
-      console.log('Firebase connected successfully');
-      return true;
-    } catch (error) {
-      console.log('Firebase not available, using localStorage');
-      return false;
-    }
-  },
-
-  async getSettings() {
-    try {
-      const docRef = window.firebase.doc(window.firebase.db, 'tenants/default');
-      const docSnap = await window.firebase.getDoc(docRef);
-      if (docSnap.exists()) {
-        return docSnap.data();
-      } else {
-        // Return default settings
-        return { 
-          title: 'نظام إدارة اشتراكات الكهرباء', 
-          subscriptionName: '', 
-          rate: 90000, 
-          priceUSD: 0.25, 
-          priceLBP: 22500, 
-          adminPIN: '' 
-        };
-      }
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async saveSettings(settings) {
-    try {
-      const docRef = window.firebase.doc(window.firebase.db, 'tenants/default');
-      await window.firebase.setDoc(docRef, settings);
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async getCustomers() {
-    try {
-      const q = window.firebase.query(window.firebase.collection(window.firebase.db, 'tenants/default/customers'));
-      const querySnapshot = await window.firebase.getDocs(q);
-      return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async saveCustomer(customer) {
-    try {
-      const docRef = await window.firebase.addDoc(window.firebase.collection(window.firebase.db, 'tenants/default/customers'), customer);
-      return docRef.id;
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async deleteCustomer(customerId) {
-    try {
-      await window.firebase.deleteDoc(window.firebase.doc(window.firebase.db, 'tenants/default/customers', customerId));
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async getInvoices() {
-    try {
-      const q = window.firebase.query(window.firebase.collection(window.firebase.db, 'tenants/default/invoices'));
-      const querySnapshot = await window.firebase.getDocs(q);
-      return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async getInvoice(invoiceId) {
-    try {
-      const docRef = window.firebase.doc(window.firebase.db, 'tenants/default/invoices', invoiceId);
-      const docSnap = await window.firebase.getDoc(docRef);
-      if (docSnap.exists()) return { id: docSnap.id, ...docSnap.data() };
-      return null;
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async saveInvoice(invoice) {
-    try {
-      // If caller provided an id (invoice number) use setDoc to preserve it, otherwise addDoc
-      if (invoice && invoice.id) {
-        const docRef = window.firebase.doc(window.firebase.db, 'tenants/default/invoices', invoice.id);
-        await window.firebase.setDoc(docRef, invoice);
-        return invoice.id;
-      }
-      const docRef = await window.firebase.addDoc(window.firebase.collection(window.firebase.db, 'tenants/default/invoices'), invoice);
-      return docRef.id;
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async getExpenses(period) {
-    try {
-      const q = window.firebase.query(
-        window.firebase.collection(window.firebase.db, 'tenants/default/expenses'),
-        window.firebase.where('period', '==', period)
-      );
-      const querySnapshot = await window.firebase.getDocs(q);
-      return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async saveExpense(expense) {
-    try {
-      const docRef = await window.firebase.addDoc(window.firebase.collection(window.firebase.db, 'tenants/default/expenses'), expense);
-      return docRef.id;
-    } catch (error) {
-      throw error;
-    }
-  },
-
-  async deleteExpense(expenseId) {
-    try {
-      await window.firebase.deleteDoc(window.firebase.doc(window.firebase.db, 'tenants/default/expenses', expenseId));
-    } catch (error) {
-      throw error;
-    }
+// Database initialization
+async function initDatabase() {
+  try {
+    // Initialize session manager
+    SessionManager.init();
+    
+    // Test Firebase Realtime Database connection
+    await RTDB.set('test', { test: true, sessionId: SessionManager.sessionId });
+    await RTDB.remove('test');
+    console.log('Firebase Realtime Database connected successfully for session:', SessionManager.sessionId);
+    return true;
+  } catch (error) {
+    console.error('Firebase connection failed:', error);
+    return false;
   }
-};
+}
 
-// LocalStorage fallback
-const LocalDB = {
-  load(key, fallback) { 
-    try { 
-      return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); 
-    } catch(e) { 
-      return fallback; 
-    } 
-  },
-  save(key, val) { 
-    localStorage.setItem(key, JSON.stringify(val)); 
-  }
-};
-
-// Unified Database Interface
-const DB = {
-  useFirebase: false,
+// Session Management - Get session ID from URL parameter 'id'
+const SessionManager = {
+  sessionId: null,
   
-  async init() {
-    try {
-      this.useFirebase = await FirebaseDB.init();
-      return this.useFirebase;
-    } catch (error) {
-      console.log('Using localStorage fallback');
-      this.useFirebase = false;
-      return false;
+  init() {
+    // Get session ID from URL parameter 'id'
+    const urlParams = new URLSearchParams(window.location.search);
+    this.sessionId = urlParams.get('id');
+    
+    if (!this.sessionId) {
+      // Generate new session ID and add to URL
+      this.sessionId = this.generateSessionId();
+      const url = new URL(window.location);
+      url.searchParams.set('id', this.sessionId);
+      window.history.replaceState({}, '', url);
     }
+    
+    console.log('Session ID:', this.sessionId);
   },
-
-  async load(key, fallback) {
-    if (this.useFirebase) {
-      try {
-        switch(key) {
-          case 'settings': return await FirebaseDB.getSettings();
-          case 'customers': return await FirebaseDB.getCustomers();
-          case 'invoices': return await FirebaseDB.getInvoices();
-          default: return fallback;
-        }
-      } catch (error) {
-        console.error('Firebase error:', error);
-        return LocalDB.load(key, fallback);
-      }
-    } else {
-      return LocalDB.load(key, fallback);
-    }
+  
+  generateSessionId() {
+    return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
   },
-
-  async save(key, val) {
-    if (this.useFirebase) {
-      try {
-        switch(key) {
-          case 'settings': await FirebaseDB.saveSettings(val); break;
-          case 'customers': await FirebaseDB.saveCustomer(val); break;
-          case 'invoices': await FirebaseDB.saveInvoice(val); break;
-          default: LocalDB.save(key, val);
-        }
-      } catch (error) {
-        console.error('Firebase error:', error);
-        LocalDB.save(key, val);
-      }
-    } else {
-      LocalDB.save(key, val);
-    }
-  },
-
-  async getExpenses(period) {
-    if (this.useFirebase) {
-      try {
-        return await FirebaseDB.getExpenses(period);
-      } catch (error) {
-        console.error('Firebase error:', error);
-        return LocalDB.load('expenses', {})[period] || [];
-      }
-    } else {
-      return LocalDB.load('expenses', {})[period] || [];
-    }
+  
+  getSessionPath(key) {
+    return `sessions/${this.sessionId}/${key}`;
   }
 };
 
-// ------- State -------
-let settings = {};
+// Month key utility function (UTC)
+function monthKey(tsOrIso) {
+  const d = new Date(tsOrIso);
+  return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, '0');
+}
+
+// Realtime Database CRUD Operations
+const RTDB = {
+  subscriptions: new Map(),
+  
+  // Subscribe to real-time data
+  subscribe(path, callback) {
+    const fullPath = SessionManager.getSessionPath(path);
+    const dataRef = ref(window.db, fullPath);
+    
+    const unsubscribe = onValue(dataRef, (snapshot) => {
+      const data = snapshot.val();
+      callback(data);
+    });
+    
+    this.subscriptions.set(path, unsubscribe);
+    return unsubscribe;
+  },
+  
+  // Get data once
+  async get(path) {
+    const fullPath = SessionManager.getSessionPath(path);
+    const snapshot = await get(ref(window.db, fullPath));
+    return snapshot.val();
+  },
+  
+  // Set data
+  async set(path, data) {
+    const fullPath = SessionManager.getSessionPath(path);
+    await set(ref(window.db, fullPath), data);
+  },
+  
+  // Push new data (auto-generates ID)
+  async push(path, data) {
+    const fullPath = SessionManager.getSessionPath(path);
+    const newRef = push(ref(window.db, fullPath));
+    await set(newRef, data);
+    return newRef.key;
+  },
+  
+  // Update specific fields
+  async update(path, updates) {
+    const fullPath = SessionManager.getSessionPath(path);
+    await update(ref(window.db, fullPath), updates);
+  },
+  
+  // Remove data
+  async remove(path) {
+    const fullPath = SessionManager.getSessionPath(path);
+    await remove(ref(window.db, fullPath));
+  },
+  
+  // Cleanup all subscriptions
+  cleanup() {
+    this.subscriptions.forEach((unsubscribe) => {
+      try { unsubscribe(); } catch(e) {}
+    });
+    this.subscriptions.clear();
+  }
+};
+
+// Global data storage
 let customers = [];
 let invoices = [];
-let expenses = {}; // by 'YYYY-MM'
+let expenses = {};
+let closedMonths = {};
+let settings = {};
+
+// Real-time data listeners
+function setupRealtimeListeners() {
+  // Listen to customers
+  RTDB.subscribe('customers', (data) => {
+    customers = data ? Object.keys(data).map(id => ({ id, ...data[id] })) : [];
+    renderCustomers();
+  });
+  
+  // Listen to invoices
+  RTDB.subscribe('invoices', (data) => {
+    invoices = data ? Object.keys(data).map(id => ({ id, ...data[id] })) : [];
+    renderHistory();
+    updateReports();
+  });
+  
+  // Listen to expenses
+  RTDB.subscribe('expenses', (data) => {
+    expenses = data || {};
+    updateReports();
+  });
+  
+  // Listen to closed months
+  RTDB.subscribe('closedMonths', (data) => {
+    closedMonths = data || {};
+    updateCloseMonthButton();
+  });
+  
+  // Listen to settings
+  RTDB.subscribe('settings', (data) => {
+    settings = data || { 
+      title: 'نظام إدارة اشتراكات الكهرباء', 
+      subscriptionName: '', 
+      rate: 90000, 
+      priceUSD: 0.25, 
+      priceLBP: 22500, 
+      adminPIN: '' 
+    };
+    renderSettings();
+  });
+}
+
+// ------- State -------
 let nextInvoiceNumber = 1; // رقم الإيصال التالي
 let isInitialized = false;
-
-// ------- Pagination State -------
-let currentPage = 1;
-let pageSize = 25;
-let totalPages = 1;
-let filteredInvoices = [];
 
 // ------- Initialize App -------
 async function initializeApp() {
@@ -843,35 +732,42 @@ async function initializeApp() {
     console.log('Initializing app...');
     
     // Initialize database
-    const useFirebase = await DB.init();
-    console.log('Database initialized:', useFirebase ? 'Firebase' : 'LocalStorage');
+    const dbConnected = await initDatabase();
+    if (!dbConnected) {
+      alert('فشل في الاتصال بقاعدة البيانات. تأكد من الاتصال بالإنترنت.');
+      return;
+    }
     
-    // Load data
-    settings = await DB.load('settings', { 
-      title: 'نظام إدارة اشتراكات الكهرباء', 
-      subscriptionName: '', 
-      rate: 90000, 
-      priceUSD: 0.25, 
-      priceLBP: 22500, 
-      adminPIN: '' 
-    });
-    customers = await DB.load('customers', []);
-    invoices = await DB.load('invoices', []);
-    // remove duplicates on startup
-    invoices = dedupeInvoices(invoices);
+    console.log('Database initialized: Firebase Realtime Database');
     
-    // Load expenses for current month
-    const currentMonth = new Date().toISOString().slice(0,7);
-    const currentExpenses = await DB.getExpenses(currentMonth);
-    expenses[currentMonth] = currentExpenses;
+    // Setup real-time listeners
+    setupRealtimeListeners();
+    
+    // Load initial data
+    const initialSettings = await RTDB.get('settings');
+    if (initialSettings) {
+      settings = initialSettings;
+    } else {
+      // Set default settings
+      settings = { 
+        title: 'نظام إدارة اشتراكات الكهرباء', 
+        subscriptionName: '', 
+        rate: 90000, 
+        priceUSD: 0.25, 
+        priceLBP: 22500, 
+        adminPIN: '' 
+      };
+      await RTDB.set('settings', settings);
+    }
+    
+    // Load next invoice number
+    const nextNum = await RTDB.get('nextInvoiceNumber');
+    nextInvoiceNumber = nextNum || 1;
     
     // Initialize UI
     renderSettings();
-    renderCustomers();
-    renderHistory();
+    updateReports();
     initDefaults();
-    // load archived reports so they persist across refresh
-    try{ await loadArchivedReportsList(); }catch(e){ console.warn('Failed loading archived reports on init', e); }
     
     isInitialized = true;
     console.log('App initialized successfully');
@@ -890,7 +786,152 @@ function qs(s){return document.querySelector(s)}
 function qsa(s){return Array.from(document.querySelectorAll(s))}
 // Format numbers for display using English digits only (no change to stored values)
 function fmt(n){ return Number(n||0).toLocaleString('en-US', {maximumFractionDigits:3}) }
-function monthKey(d){ const dt=new Date(d); return dt.toISOString().slice(0,7); }
+// Update reports in real-time
+function updateReports() {
+  const selectedMonth = document.getElementById('r_month')?.value || monthKey(new Date());
+  
+  // Calculate totals for the selected month
+  const monthInvoices = invoices.filter(inv => monthKey(inv.ts || inv.date) === selectedMonth);
+  const monthExpenses = expenses[selectedMonth] || [];
+  
+  let totalKwh = 0;
+  let totalUsd = 0;
+  let totalLbp = 0;
+  let expUsd = 0;
+  let expLbp = 0;
+  
+  // Calculate invoice totals
+  monthInvoices.forEach(inv => {
+    totalKwh += Number(inv.kwh || 0);
+    if (inv.currency === 'USD') {
+      totalUsd += Number(inv.total || 0);
+    } else if (inv.currency === 'LBP') {
+      totalLbp += Number(inv.total || 0);
+    }
+  });
+  
+  // Calculate expense totals
+  monthExpenses.forEach(exp => {
+    if (exp.currency === 'USD') {
+      expUsd += Number(exp.amount || 0);
+    } else if (exp.currency === 'LBP') {
+      expLbp += Number(exp.amount || 0);
+    }
+  });
+  
+  // Calculate net profits
+  const netUsd = totalUsd - expUsd;
+  const netLbp = totalLbp - expLbp;
+  
+  // Update DOM elements
+  const elements = {
+    '#totalKwh': totalKwh,
+    '#totalUsd': totalUsd,
+    '#totalLbp': totalLbp,
+    '#expUsd': expUsd,
+    '#expLbp': expLbp,
+    '#netUsd': netUsd,
+    '#netLbp': netLbp
+  };
+  
+  Object.entries(elements).forEach(([selector, value]) => {
+    const el = document.querySelector(selector);
+    if (el) {
+      el.textContent = fmt(value);
+    }
+  });
+}
+
+// Update close month button state
+function updateCloseMonthButton() {
+  const selectedMonth = document.getElementById('r_month')?.value || monthKey(new Date());
+  const closeBtn = document.getElementById('btnCloseMonth');
+  
+  if (closeBtn) {
+    const isClosed = closedMonths[selectedMonth] === true;
+    closeBtn.disabled = isClosed;
+    closeBtn.textContent = isClosed ? 'الشهر مقفول' : 'إقفال الشهر';
+  }
+}
+
+// Close month function
+async function closeMonth() {
+  const selectedMonth = document.getElementById('r_month')?.value || monthKey(new Date());
+  
+  // Check if month is already closed
+  if (closedMonths[selectedMonth] === true) {
+    alert('هذا الشهر مقفول بالفعل');
+    return;
+  }
+  
+  if (!confirm(`هل أنت متأكد من إقفال شهر ${selectedMonth}؟`)) {
+    return;
+  }
+  
+  try {
+    // Calculate totals for the month
+    const monthInvoices = invoices.filter(inv => monthKey(inv.ts || inv.date) === selectedMonth);
+    const monthExpenses = expenses[selectedMonth] || [];
+    
+    let totalKwh = 0;
+    let totalUsd = 0;
+    let totalLbp = 0;
+    let expUsd = 0;
+    let expLbp = 0;
+    
+    // Calculate invoice totals
+    monthInvoices.forEach(inv => {
+      totalKwh += Number(inv.kwh || 0);
+      if (inv.currency === 'USD') {
+        totalUsd += Number(inv.total || 0);
+      } else if (inv.currency === 'LBP') {
+        totalLbp += Number(inv.total || 0);
+      }
+    });
+    
+    // Calculate expense totals
+    monthExpenses.forEach(exp => {
+      if (exp.currency === 'USD') {
+        expUsd += Number(exp.amount || 0);
+      } else if (exp.currency === 'LBP') {
+        expLbp += Number(exp.amount || 0);
+      }
+    });
+    
+    // Calculate net profits
+    const netUsd = totalUsd - expUsd;
+    const netLbp = totalLbp - expLbp;
+    
+    // Create report summary
+    const summary = {
+      totalKwh,
+      totalUsd,
+      totalLbp,
+      expUsd,
+      expLbp,
+      netUsd,
+      netLbp,
+      closedAt: Date.now()
+    };
+    
+    // Save report summary
+    await RTDB.set(`reports/${selectedMonth}/summary`, summary);
+    
+    // Mark month as closed
+    await RTDB.update('closedMonths', { [selectedMonth]: true });
+    
+    alert(`تم إقفال شهر ${selectedMonth} بنجاح`);
+    
+  } catch (error) {
+    console.error('Error closing month:', error);
+    alert('فشل في إقفال الشهر: ' + error.message);
+  }
+}
+
+// Check if month is closed before allowing modifications
+function isMonthClosed(month) {
+  return closedMonths[month] === true;
+}
 
 
 // ------- Tabs -------
@@ -907,16 +948,13 @@ qsa('.tab-btn').forEach(b=>b.addEventListener('click',async ()=>{
   }catch(e){ console.error('Error reloading invoices on tab switch', e); }
 }));
 
-// reload invoices from DB (Firebase or Local) and re-render history
+// reload invoices from RTDB and re-render history
 async function reloadInvoices(){
   try{
-    if (DB.useFirebase){
-      console.log('Reloading invoices from Firebase...');
-      invoices = await DB.load('invoices', []);
-      console.log('Reloaded invoices count=', invoices.length);
-    } else {
-      invoices = await DB.load('invoices', []);
-    }
+    console.log('Reloading invoices from RTDB...');
+    const invoicesData = await RTDB.get('invoices');
+    invoices = invoicesData ? Object.keys(invoicesData).map(id => ({ id, ...invoicesData[id] })) : [];
+    console.log('Reloaded invoices count=', invoices.length);
     // dedupe by id (keep last occurrence)
     invoices = dedupeInvoices(invoices);
     renderHistory();
@@ -982,7 +1020,7 @@ qs('#btnSaveSettings').onclick = async ()=>{
     settings.priceUSD = Number(qs('#s_price_usd').value||0);
     settings.priceLBP = Number(qs('#s_price_lbp').value||0);
     settings.adminPIN = qs('#s_admin_pin').value;
-    await DB.save('settings', settings);
+    await RTDB.set('settings', settings);
     alert('تم حفظ الإعدادات');
   } catch (error) {
     console.error('Error saving settings:', error);
@@ -1026,21 +1064,13 @@ qs('#btnAddCustomer').onclick = async ()=>{
     };
     if(!c.name){ alert('أدخل اسم الزبون'); return; }
     
-    if (DB.useFirebase) {
-      const customerId = await FirebaseDB.saveCustomer(c);
-      c.id = customerId;
-    } else {
-      c.id = 'C' + Date.now();
-    }
+    // Generate auto ID and save to RTDB
+    const customerId = await RTDB.push('customers', c);
     
-    customers.push(c);
+    // Clear form
     qs('#c_name').value = qs('#c_phone').value = qs('#c_address').value = qs('#c_monthly').value = qs('#c_price_kwh').value = '';
     
-    if (!DB.useFirebase) {
-      DB.save('customers', customers);
-    }
-    
-    renderCustomers();
+    alert('تم إضافة الزبون بنجاح');
   } catch (error) {
     console.error('Error adding customer:', error);
     alert('خطأ في إضافة الزبون: ' + error.message);
@@ -1054,14 +1084,8 @@ qs('#customersTable').addEventListener('click', async (e)=>{
     if(confirm('حذف هذا الزبون؟')){
       try {
         const customer = customers[i];
-        if (DB.useFirebase) {
-          await FirebaseDB.deleteCustomer(customer.id);
-        }
-        customers.splice(i,1);
-        if (!DB.useFirebase) {
-          DB.save('customers', customers);
-        }
-        renderCustomers();
+        await RTDB.remove(`customers/${customer.id}`);
+        alert('تم حذف الزبون بنجاح');
       } catch (error) {
         console.error('Error deleting customer:', error);
         alert('خطأ في حذف الزبون: ' + error.message);
@@ -1071,7 +1095,8 @@ qs('#customersTable').addEventListener('click', async (e)=>{
     const c = customers[i];
     qs('#c_name').value=c.name; qs('#c_phone').value=c.phone; qs('#c_address').value=c.address;
     qs('#c_monthly').value=c.monthly; qs('#c_price_kwh').value=c.price_kwh;
-    customers.splice(i,1); DB.save('customers', customers); renderCustomers();
+    // Update customer in RTDB
+    await RTDB.set(`customers/${c.id}`, c);
   }
 });
 
@@ -1418,9 +1443,7 @@ qs('#btnSaveInvoice').onclick = async ()=>{
     
     // تحديث رقم الإيصال التالي
     nextInvoiceNumber++;
-    if (!DB.useFirebase) {
-      DB.save('nextInvoiceNumber', nextInvoiceNumber);
-    }
+    await RTDB.set('nextInvoiceNumber', nextInvoiceNumber);
     
     // حساب الإجماليات بشكل صحيح من الحقول الحالية (لا نعتمد على نص العرض)
     const rate = Number(settings.rate || 90000);
@@ -1471,34 +1494,16 @@ qs('#btnSaveInvoice').onclick = async ()=>{
     };
     
     console.log('Saving invoice (payload):', data);
-    if (DB.useFirebase) {
-      await FirebaseDB.saveInvoice(data);
-      // reload invoices from server to ensure the list matches backend
-      try {
-        invoices = await DB.load('invoices', []);
-        console.log('Reloaded invoices after save, count=', invoices.length);
-        invoices = dedupeInvoices(invoices);
-        console.log('After dedupe, invoices count=', invoices.length);
-      } catch (e) {
-        console.error('Failed to reload invoices after save:', e);
-        // fallback: push the local data so UI updates
-        invoices.push(data);
-        invoices = dedupeInvoices(invoices);
-      }
-    } else {
-      // local save (ensure we await DB.load which may be async)
-      let localList = [];
-      try {
-        localList = await DB.load('invoices', []);
-      } catch (e) {
-        console.error('Failed to load local invoices, falling back to LocalDB:', e);
-        localList = LocalDB.load('invoices', []);
-      }
-      if (!Array.isArray(localList)) localList = [];
-      localList.push(data);
-      DB.save('invoices', localList);
-      invoices = dedupeInvoices(localList);
+    
+    // Check if month is closed
+    const invoiceMonth = monthKey(data.date);
+    if (isMonthClosed(invoiceMonth)) {
+      alert(`لا يمكن إضافة فاتورة لشهر ${invoiceMonth} لأنه مقفول`);
+      return;
     }
+    
+    // Save to RTDB
+    await RTDB.set(`invoices/${data.id}`, data);
 
     // show confirmation before printing
     alert('تم الحفظ! جارٍ فتح معاينة الطباعة...');
@@ -1524,44 +1529,26 @@ qs('#btnSaveInvoice').onclick = async ()=>{
 function renderHistory(){
   const tbody = qs('#historyTable tbody'); 
   tbody.innerHTML = '';
-  
-  // تطبيق الفلاتر
   let list = invoices.slice().sort((a,b)=> b.date.localeCompare(a.date));
+
   const q = (qs('#h_search').value||'').toLowerCase();
-  if(q) list = list.filter(v => (v.customerName+v.id).toLowerCase().includes(q));
-  const m = qs('#h_month').value; // YYYY-MM
-  if(m) list = list.filter(v => v.date.startsWith(m));
+  const month = qs('#h_month').value || monthKey(new Date());
   
-  // حفظ القائمة المفلترة
-  filteredInvoices = list;
-  
-  // حساب Pagination
-  totalPages = Math.ceil(list.length / pageSize);
-  if (currentPage > totalPages && totalPages > 0) {
-    currentPage = totalPages;
-  }
-  if (currentPage < 1) currentPage = 1;
-  
-  // الحصول على العناصر للصفحة الحالية
-  const startIndex = (currentPage - 1) * pageSize;
-  const endIndex = startIndex + pageSize;
-  const pageInvoices = list.slice(startIndex, endIndex);
+  // Filter by month and search
+  list = list.filter(v => {
+    const invoiceMonth = monthKey(v.date);
+    const matchesMonth = invoiceMonth === month;
+    const matchesSearch = !q || (v.customerName+v.id).toLowerCase().includes(q);
+    return matchesMonth && matchesSearch;
+  });
 
-  // إظهار/إخفاء زر طباعة الكل حسب وجود فواتير في الشهر المحدد
-  const printAllBtn = qs('#btnPrintAllMonth');
-  if (m && list.length > 0) {
-    printAllBtn.style.display = 'inline-block';
-    printAllBtn.textContent = `طباعة الكل لهذا الشهر (${list.length})`;
-  } else {
-    printAllBtn.style.display = 'none';
-  }
 
-  // عرض الفواتير للصفحة الحالية
-  pageInvoices.forEach(v=>{
+  list.forEach(v=>{
     const tr = document.createElement('tr');
     console.log('renderHistory row:', v.id, v);
     
     // حساب الإجماليات إذا لم تكن موجودة (للبيانات القديمة)
+    // prefer stored totals; if missing, compute from components
     const normalized = normalizeInvoiceTotals(v);
     let totalUSD = normalized.usd;
     let totalLBP = normalized.lbp;
@@ -1592,118 +1579,6 @@ function renderHistory(){
     `;
     tbody.appendChild(tr);
   });
-  
-  // تحديث Pagination
-  updatePagination();
-}
-
-// دالة تحديث Pagination
-function updatePagination() {
-  const paginationControls = qs('#paginationControls');
-  const paginationInfo = qs('#paginationInfo');
-  const pageNumbers = qs('#pageNumbers');
-  
-  // إظهار/إخفاء Pagination
-  if (totalPages <= 1) {
-    paginationControls.style.display = 'none';
-    paginationInfo.textContent = `عرض ${filteredInvoices.length} من ${filteredInvoices.length} فاتورة`;
-    return;
-  }
-  
-  paginationControls.style.display = 'block';
-  
-  // معلومات Pagination
-  const startItem = (currentPage - 1) * pageSize + 1;
-  const endItem = Math.min(currentPage * pageSize, filteredInvoices.length);
-  paginationInfo.textContent = `عرض ${startItem}-${endItem} من ${filteredInvoices.length} فاتورة`;
-  
-  // تحديث أزرار التنقل
-  qs('#firstPage').disabled = currentPage === 1;
-  qs('#prevPage').disabled = currentPage === 1;
-  qs('#nextPage').disabled = currentPage === totalPages;
-  qs('#lastPage').disabled = currentPage === totalPages;
-  
-  // إنشاء أرقام الصفحات
-  pageNumbers.innerHTML = '';
-  
-  // منطق عرض أرقام الصفحات
-  let startPage = Math.max(1, currentPage - 2);
-  let endPage = Math.min(totalPages, currentPage + 2);
-  
-  // التأكد من عرض 5 صفحات على الأقل إذا كان العدد الإجمالي أكبر
-  if (endPage - startPage < 4) {
-    if (startPage === 1) {
-      endPage = Math.min(totalPages, startPage + 4);
-    } else if (endPage === totalPages) {
-      startPage = Math.max(1, endPage - 4);
-    }
-  }
-  
-  // إضافة زر الصفحة الأولى إذا لم تكن مرئية
-  if (startPage > 1) {
-    addPageButton(1);
-    if (startPage > 2) {
-      addEllipsis();
-    }
-  }
-  
-  // إضافة أرقام الصفحات
-  for (let i = startPage; i <= endPage; i++) {
-    addPageButton(i);
-  }
-  
-  // إضافة زر الصفحة الأخيرة إذا لم تكن مرئية
-  if (endPage < totalPages) {
-    if (endPage < totalPages - 1) {
-      addEllipsis();
-    }
-    addPageButton(totalPages);
-  }
-  
-  function addPageButton(pageNum) {
-    const btn = document.createElement('button');
-    btn.className = `btn ghost page-btn ${pageNum === currentPage ? 'active' : ''}`;
-    btn.textContent = pageNum;
-    btn.onclick = () => goToPage(pageNum);
-    pageNumbers.appendChild(btn);
-  }
-  
-  function addEllipsis() {
-    const ellipsis = document.createElement('span');
-    ellipsis.className = 'pagination-ellipsis';
-    ellipsis.textContent = '...';
-    pageNumbers.appendChild(ellipsis);
-  }
-}
-
-// وظائف التنقل
-function goToPage(page) {
-  if (page >= 1 && page <= totalPages && page !== currentPage) {
-    currentPage = page;
-    renderHistory();
-  }
-}
-
-function goToFirstPage() {
-  goToPage(1);
-}
-
-function goToPrevPage() {
-  goToPage(currentPage - 1);
-}
-
-function goToNextPage() {
-  goToPage(currentPage + 1);
-}
-
-function goToLastPage() {
-  goToPage(totalPages);
-}
-
-function changePageSize() {
-  pageSize = parseInt(qs('#pageSize').value);
-  currentPage = 1; // العودة للصفحة الأولى
-  renderHistory();
 }
 // helper: open standardized print window for receipt HTML
 function openPrintWindow(innerHtml){
@@ -1796,185 +1671,318 @@ async function printInvoice(invoiceId){
     const formattedTotalUSD = totalUSD != null ? Number(totalUSD).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—';
     const formattedTotalLBP = totalLBP != null ? Number(totalLBP).toLocaleString('en-US') : '—';
 
-    // Build receipt HTML directly without using the form
-    const subscriptionTitle = settings.subscriptionName || 'اشتراك الكهرباء';
-    const invoiceNumber = inv.id || 'R000000';
-    const date = inv.date || new Date().toISOString().slice(0,10);
-    const baseCur = inv.pricingMode || inv.base_currency || 'USD';
-    const extraCur = extrasArr[0]?.currency || inv.extra_currency || 'USD';
-    const extraNote = extrasArr[0]?.label || inv.extra_note || '';
+    // Instead of building HTML here, reuse the on-screen preview generator
+    // so printed output from History matches the preview exactly.
+    const consumptionValue = (priceUsd != null ? Number(priceUsd) : 0) * usage;
 
-    // format values for display according to requirements
-    const formattedPrice = Number(displayPrice).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-    const formattedMonthly = Number(monthly).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    // backup form state
+    const backup = {};
+    const fields = ['#inv_prev','#inv_curr','#inv_price_kwh','#inv_monthly','#inv_extra','#inv_extra_currency','#inv_extra_note','#inv_discount','#inv_base_currency','#inv_date','#inv_customer'];
+    fields.forEach(k=>{ const el = qs(k); backup[k]= el ? el.value : null; });
+    const backupSelected = (typeof selectedCustomerIndex !== 'undefined') ? selectedCustomerIndex : -1;
 
-    const receiptHtml = `
-    <!-- Header -->
-    <div style="text-align:center;margin-bottom:8px;border-bottom:1px solid #333;padding-bottom:6px">
-      <div class="receipt-title">${subscriptionTitle}</div>
-      <div class="receipt-subtitle">إيصال سداد</div>
-      <div class="receipt-meta">${date} • رقم: ${invoiceNumber}</div>
-    </div>
+    // ensure customer entry exists in customers[] so renderReceiptPreview shows correct name
+    let addedTempCustomer = false; let custIndex = customers.findIndex(c=> String(c.id) === String(inv.customerId));
+    if(custIndex === -1){ customers.push({ id: inv.customerId || ('_tmp_'+Math.random().toString(36).slice(2)), name: inv.customerName||'', phone: inv.customerPhone||'' }); custIndex = customers.length-1; addedTempCustomer = true; }
 
-    <!-- Customer Info (compact) -->
-    <div style="margin-bottom:6px;padding:2px 0;background:transparent;">
-      <div class="receipt-customer">
-        <span><strong>الاسم:</strong> ${cName}</span>
-        ${inv.customerPhone?`<span class="sep">|</span><span><strong>الهاتف:</strong> ${inv.customerPhone}</span>`:''}
-      </div>
-    </div>
+    try{
+      // populate form with invoice values
+      if(qs('#inv_prev')) qs('#inv_prev').value = inv.prev != null ? inv.prev : '';
+      if(qs('#inv_curr')) qs('#inv_curr').value = inv.curr != null ? inv.curr : '';
+      if(qs('#inv_price_kwh')) qs('#inv_price_kwh').value = priceUsd != null ? priceUsd : (inv.price_kwh != null ? inv.price_kwh : qs('#inv_price_kwh').value);
+      if(qs('#inv_monthly')) qs('#inv_monthly').value = monthly || '';
+      if(qs('#inv_extra')) qs('#inv_extra').value = extraTotal || 0;
+      if(qs('#inv_extra_currency')) qs('#inv_extra_currency').value = extrasArr[0]?.currency || inv.extra_currency || qs('#inv_extra_currency').value;
+      if(qs('#inv_extra_note')) qs('#inv_extra_note').value = extrasArr[0]?.label || inv.extra_note || '';
+      if(qs('#inv_discount')) qs('#inv_discount').value = inv.discount || 0;
+      if(qs('#inv_base_currency')) qs('#inv_base_currency').value = inv.pricingMode || inv.base_currency || qs('#inv_base_currency').value;
+      if(qs('#inv_date')) qs('#inv_date').value = inv.date || qs('#inv_date').value;
+      if(qs('#inv_customer')) qs('#inv_customer').value = custIndex;
+      selectedCustomerIndex = custIndex;
 
-    <!-- Consumption table (prev first, removed total column) -->
-    <div style="margin-bottom:6px">
-      <table style="width:100%;border-collapse:collapse;font-size:10px;">
-        <thead>
-          <tr>
-            <th style="padding:3px 6px;border:1px solid #444">العداد السابق</th>
-            <th style="padding:3px 6px;border:1px solid #444">العداد الحالي</th>
-            <th style="padding:3px 6px;border:1px solid #444">الاستهلاك (ك.و.س)</th>
-            <th style="padding:3px 6px;border:1px solid #444">سعر الكيلو</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(prev).toLocaleString('en-US')}</td>
-            <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(curr).toLocaleString('en-US')}</td>
-            <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(usage).toLocaleString('en-US')}</td>
-            <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${formattedPrice} USD</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+      // regenerate preview and capture its HTML
+      if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
+      const receiptHtml = qs('#receipt').innerHTML;
 
-    <!-- Fees row: المقطوعة | دفعات إضافية | خصم -->
-    <div style="margin-bottom:6px">
-      <table style="width:100%;border-collapse:collapse;font-size:10px;">
-        <tr>
-          <th style="padding:3px 6px;border:1px solid #444">المقطوعة</th>
-          <th style="padding:3px 6px;border:1px solid #444">دفعات إضافية</th>
-          <th style="padding:3px 6px;border:1px solid #444">خصم</th>
-        </tr>
-        <tr>
-          <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(monthly).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} ${baseCur}</td>
-          <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">
-            ${Number(extraTotal||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} ${extraCur}
-            ${ extraNote ? `<div style="font-size:9px;margin-top:4px;text-align:right;direction:rtl;color:inherit">ملاحظة: ${extraNote}</div>` : '' }
-          </td>
-          <td style="padding:3px 6px;border:1px solid #444;text-align:right;direction:ltr" lang="en">${Number(discount||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} ${baseCur}</td>
-        </tr>
-      </table>
-    </div>
-
-    <!-- Total -->
-    <div style="margin-bottom:6px;padding:6px;border:1px solid #444;border-radius:4px;background:#fff">
-      <div style="text-align:right;font-weight:800;font-size:13px;">الإجمالي: <span style="direction:ltr" lang="en">LBP ${formattedTotalLBP}</span>  / <span style="direction:ltr" lang="en">USD ${formattedTotalUSD}</span></div>
-    </div>
-
-    <!-- Footer note -->
-    <div style="text-align:center;margin-top:6px;padding:10px 12px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:6px;font-size:13px;color:#764c00;font-weight:700;line-height:1.4">
-      الرجاء عدم التأخير في تسديد الاشتراك، حرصًا على استمرارية الخدمة وعدم اضطرارنا لقطع الاشتراك.
-    </div>
-    `;
-
-    // open print window with the receipt HTML
-    openPrintWindow(receiptHtml);
+      // open print window with the preview HTML
+      openPrintWindow(receiptHtml);
+    }finally{
+      // restore backed-up form state
+      fields.forEach(k=>{ const el = qs(k); if(el && backup[k] != null) el.value = backup[k]; });
+      selectedCustomerIndex = backupSelected;
+      if(addedTempCustomer) customers.splice(custIndex,1);
+      // refresh preview to original state
+      if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
+    }
   } catch (err) {
     console.error('printInvoice error:', err);
     alert('تعذّر فتح الوصل للطباعة: ' + (err.message || err));
   }
 }
-renderHistory();
-qs('#h_search').oninput = () => {
-  currentPage = 1; // العودة للصفحة الأولى عند البحث
-  renderHistory();
-};
-qs('#h_month').oninput = () => {
-  currentPage = 1; // العودة للصفحة الأولى عند تغيير الشهر
-  renderHistory();
-};
 
-// مستمعي أحداث Pagination
-qs('#pageSize').onchange = changePageSize;
-qs('#firstPage').onclick = goToFirstPage;
-qs('#prevPage').onclick = goToPrevPage;
-qs('#nextPage').onclick = goToNextPage;
-qs('#lastPage').onclick = goToLastPage;
+// Helper function to wait for window load with timeout
+function waitForWindowLoad(win, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    if (!win || win.closed) {
+      reject(new Error('Window is null or closed'));
+      return;
+    }
 
-// طباعة جميع الفواتير للشهر المحدد
-qs('#btnPrintAllMonth').onclick = async ()=>{
-  const month = qs('#h_month').value;
-  if (!month) {
-    alert('يرجى اختيار شهر أولاً');
-    return;
-  }
+    const timeoutId = setTimeout(() => {
+      reject(new Error('Window load timeout'));
+    }, timeout);
 
-  // الحصول على الفواتير للشهر المحدد (استخدام القائمة المفلترة الحالية)
-  let monthInvoices = filteredInvoices.filter(v => v.date && v.date.startsWith(month));
-  
-  // ترتيب الفواتير حسب رقم الفاتورة تصاعدياً
-  monthInvoices.sort((a, b) => {
-    const aNum = parseInt(a.id.replace('R', '')) || 0;
-    const bNum = parseInt(b.id.replace('R', '')) || 0;
-    return aNum - bNum;
+    const checkReady = () => {
+      try {
+        if (win.document && win.document.readyState === 'complete') {
+          clearTimeout(timeoutId);
+          resolve();
+        } else {
+          setTimeout(checkReady, 100);
+        }
+      } catch (e) {
+        clearTimeout(timeoutId);
+        reject(new Error('Cannot access window document: ' + e.message));
+      }
+    };
+
+    try {
+      if (win.document && win.document.readyState === 'complete') {
+        clearTimeout(timeoutId);
+        resolve();
+      } else {
+        win.addEventListener('load', () => {
+          clearTimeout(timeoutId);
+          resolve();
+        }, { once: true });
+        // Fallback check
+        setTimeout(checkReady, 100);
+      }
+    } catch (e) {
+      clearTimeout(timeoutId);
+      reject(new Error('Cannot access window: ' + e.message));
+    }
   });
+}
 
-  if (monthInvoices.length === 0) {
-    alert('لا توجد فواتير في هذا الشهر');
+// Helper function to get filtered invoices for current month
+function getFilteredInvoicesForMonth() {
+  const month = qs('#h_month').value || monthKey(new Date());
+  const q = (qs('#h_search').value||'').toLowerCase();
+  
+  return invoices
+    .slice()
+    .sort((a,b)=> a.date.localeCompare(b.date)) // Sort by date ascending for sequential printing
+    .filter(v => {
+      const invoiceMonth = monthKey(v.date);
+      const matchesMonth = invoiceMonth === month;
+      const matchesSearch = !q || (v.customerName+v.id).toLowerCase().includes(q);
+      return matchesMonth && matchesSearch;
+    });
+}
+
+// Enhanced print window function with proper error handling
+function openPrintWindowSafe(innerHtml) {
+  return new Promise((resolve, reject) => {
+    const printerWidth = Number(settings.printerWidth || 72);
+    const printWindow = window.open('', '_blank', 'width=300,height=600');
+    
+    if (!printWindow) {
+      reject(new Error('تم منع فتح النافذة. يرجى السماح بالنوافذ المنبثقة (Pop-ups) للموقع.'));
+      return;
+    }
+
+    try {
+      printWindow.document.write(`<!doctype html>
+        <html lang="ar" dir="rtl">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=${printerWidth}mm, initial-scale=1">
+          <title>طباعة إيصال</title>
+          <style>
+            @page { size: ${printerWidth}mm auto; margin: 3mm; }
+            html,body{box-sizing:border-box;margin:0;padding:0;background:#fff;color:#000}
+            body{display:flex;justify-content:center;align-items:flex-start}
+            .print-wrapper{width:${Math.max(48, printerWidth - 8)}mm;padding:3mm;margin:0 auto;font-family:Arial,Helvetica,sans-serif;font-size:10px;line-height:1}
+            table{width:100%;border-collapse:collapse;font-size:10px}
+            th,td{padding:2px 5px;border:1px solid #444}
+            thead th{background:#f5f5f5;font-weight:700}
+            .label{color:#333;text-align:right}
+            .value{text-align:right}
+            .value[lang="en"]{direction:ltr;text-align:left}
+            .no-break{page-break-inside:avoid;break-inside:avoid}
+            .total-box{border:1px solid #444;padding:6px;border-radius:4px;background:#fff}
+            .total-box .amount{font-weight:900;font-size:13px;text-align:right}
+
+            /* Receipt-specific classes kept in print window so History prints match preview */
+            .receipt-title { font-size:28px; font-weight:900; text-align:center; letter-spacing:0.4px; margin:0 0 6px 0 }
+            .receipt-subtitle { font-size:12px; color:#666; text-align:center; margin-top:2px }
+            .receipt-meta { font-size:10px; color:#888; text-align:center; margin-top:2px }
+            .receipt-customer { font-size:13px; font-weight:800; text-align:right; margin-bottom:6px }
+            .receipt-customer .sep { display:inline-block; padding:0 8px; color:#444 }
+
+            /* Footer note styling (targets inline background used in template) */
+            div[style*="background:#fff3cd"] { background:#fffaf0; border:1px solid #e6d8a7; padding:8px 10px; font-size:11px; color:#6b4f00; line-height:1.4; border-radius:6px; text-align:center }
+          </style>
+        </head>
+        <body>
+          <div class="print-wrapper">${innerHtml}</div>
+        </body>
+        </html>`);
+
+      printWindow.document.close();
+
+      waitForWindowLoad(printWindow)
+        .then(() => {
+          try {
+            if (!printWindow || printWindow.closed) {
+              reject(new Error('نافذة الطباعة أُغلقت'));
+              return;
+            }
+            
+            if (!printWindow.document) {
+              reject(new Error('لا يمكن الوصول لمستند النافذة'));
+              return;
+            }
+
+            printWindow.focus();
+            printWindow.print();
+            
+            // Wait a bit for print dialog and then close
+            setTimeout(() => {
+              try {
+                if (!printWindow.closed) {
+                  printWindow.close();
+                }
+                resolve();
+              } catch (e) {
+                console.warn('Error closing window:', e);
+                resolve(); // Still resolve as printing might have worked
+              }
+            }, 1500);
+          } catch (e) {
+            reject(new Error('خطأ في الطباعة: ' + e.message));
+          }
+        })
+        .catch(reject);
+    } catch (e) {
+      reject(new Error('خطأ في فتح نافذة الطباعة: ' + e.message));
+    }
+  });
+}
+
+// Sequential print all function
+async function printAllInvoices() {
+  const filteredInvoices = getFilteredInvoicesForMonth();
+  
+  if (filteredInvoices.length === 0) {
+    alert('لا توجد وصولات لهذا الشهر');
     return;
   }
 
-  // إظهار مؤشر التقدم
-  const progressDiv = qs('#printProgress');
-  const progressText = qs('#printProgressText');
-  const progressFill = qs('#printProgressFill');
-  const printBtn = qs('#btnPrintAllMonth');
+  const printAllBtn = qs('#btnPrintAll');
+  const originalText = printAllBtn.textContent;
+  const totalCount = filteredInvoices.length;
   
-  progressDiv.style.display = 'block';
-  printBtn.disabled = true;
-  printBtn.textContent = 'جاري الطباعة...';
-
-  let printedCount = 0;
-  const totalCount = monthInvoices.length;
-
+  // Disable button and show progress
+  printAllBtn.disabled = true;
+  printAllBtn.textContent = `جاري الطباعة... 0/${totalCount}`;
+  
   try {
-    for (let i = 0; i < monthInvoices.length; i++) {
-      const invoice = monthInvoices[i];
+    for (let i = 0; i < filteredInvoices.length; i++) {
+      const invoice = filteredInvoices[i];
       
-      // تحديث مؤشر التقدم
-      progressText.textContent = `جاري طباعة الفاتورة ${i + 1} من ${totalCount} (${invoice.id})`;
-      progressFill.style.width = `${((i + 1) / totalCount) * 100}%`;
+      // Update progress
+      printAllBtn.textContent = `جاري الطباعة... ${i + 1}/${totalCount}`;
       
-      // طباعة الفاتورة
-      await printInvoice(invoice.id);
-      printedCount++;
-      
-      // مهلة بين كل فاتورة (1000ms)
-      if (i < monthInvoices.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        // Get invoice HTML using the same logic as printInvoice
+        const inv = invoice;
+        
+        // backup form state
+        const backup = {};
+        const fields = ['#inv_prev','#inv_curr','#inv_price_kwh','#inv_monthly','#inv_extra','#inv_extra_currency','#inv_extra_note','#inv_discount','#inv_base_currency','#inv_date','#inv_customer'];
+        fields.forEach(k=>{ const el = qs(k); backup[k]= el ? el.value : null; });
+        const backupSelected = (typeof selectedCustomerIndex !== 'undefined') ? selectedCustomerIndex : -1;
+
+        // ensure customer entry exists in customers[] so renderReceiptPreview shows correct name
+        let addedTempCustomer = false; 
+        let custIndex = customers.findIndex(c=> String(c.id) === String(inv.customerId));
+        if(custIndex === -1){ 
+          customers.push({ id: inv.customerId || ('_tmp_'+Math.random().toString(36).slice(2)), name: inv.customerName||'', phone: inv.customerPhone||'' }); 
+          custIndex = customers.length-1; 
+          addedTempCustomer = true; 
+        }
+
+        try{
+          // populate form with invoice values for rendering
+          if(qs('#inv_prev')) qs('#inv_prev').value = inv.prev != null ? inv.prev : '';
+          if(qs('#inv_curr')) qs('#inv_curr').value = inv.curr != null ? inv.curr : '';
+          
+          const priceUsd = inv.pricePerKwhUsd ?? inv.price_kwh ?? null;
+          if(qs('#inv_price_kwh')) qs('#inv_price_kwh').value = priceUsd != null ? priceUsd : (inv.price_kwh != null ? inv.price_kwh : qs('#inv_price_kwh').value);
+          
+          const monthly = Number((inv.fixedFeeValue != null ? inv.fixedFeeValue : (inv.monthly != null ? inv.monthly : 0)));
+          if(qs('#inv_monthly')) qs('#inv_monthly').value = monthly || '';
+          
+          const extrasArr = Array.isArray(inv.extras) ? inv.extras : (inv.extra ? [{ label: inv.extra_note || 'دفعة إضافية', value: inv.extra, currency: inv.extra_currency || 'USD'}] : []);
+          const extraTotal = extrasArr.reduce((s,e)=> s + (Number(e.value||0)), 0);
+          
+          if(qs('#inv_extra')) qs('#inv_extra').value = extraTotal || 0;
+          if(qs('#inv_extra_currency')) qs('#inv_extra_currency').value = extrasArr[0]?.currency || inv.extra_currency || qs('#inv_extra_currency').value;
+          if(qs('#inv_extra_note')) qs('#inv_extra_note').value = extrasArr[0]?.label || inv.extra_note || '';
+          if(qs('#inv_discount')) qs('#inv_discount').value = inv.discount || 0;
+          if(qs('#inv_base_currency')) qs('#inv_base_currency').value = inv.pricingMode || inv.base_currency || qs('#inv_base_currency').value;
+          if(qs('#inv_date')) qs('#inv_date').value = inv.date || qs('#inv_date').value;
+          if(qs('#inv_customer')) qs('#inv_customer').value = custIndex;
+          selectedCustomerIndex = custIndex;
+
+          // regenerate preview and capture its HTML
+          if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
+          const receiptHtml = qs('#receipt').innerHTML;
+
+          // print using the safe function
+          await openPrintWindowSafe(receiptHtml);
+          
+        }finally{
+          // restore backed-up form state
+          fields.forEach(k=>{ const el = qs(k); if(el && backup[k] != null) el.value = backup[k]; });
+          selectedCustomerIndex = backupSelected;
+          if(addedTempCustomer) customers.splice(custIndex,1);
+          // refresh preview to original state
+          if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
+        }
+        
+        // Small delay between prints
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (error) {
+        console.error(`Error printing invoice ${invoice.id}:`, error);
+        // Continue with next invoice even if one fails
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
     
-    // إخفاء مؤشر التقدم
-    progressDiv.style.display = 'none';
-    printBtn.disabled = false;
-    printBtn.textContent = `طباعة الكل لهذا الشهر (${totalCount})`;
-    
-    alert(`تم طباعة ${printedCount} فاتورة بنجاح`);
+    alert(`تم الانتهاء من طباعة ${totalCount} وصل`);
     
   } catch (error) {
-    console.error('خطأ في طباعة الفواتير:', error);
-    alert(`حدث خطأ أثناء الطباعة. تم طباعة ${printedCount} من ${totalCount} فاتورة`);
-    
-    // إخفاء مؤشر التقدم
-    progressDiv.style.display = 'none';
-    printBtn.disabled = false;
-    printBtn.textContent = `طباعة الكل لهذا الشهر (${totalCount})`;
+    console.error('Error in printAllInvoices:', error);
+    alert('حدث خطأ أثناء الطباعة: ' + error.message);
+  } finally {
+    // Restore button state
+    printAllBtn.disabled = false;
+    printAllBtn.textContent = originalText;
   }
-};
+}
+
+renderHistory();
+qs('#h_search').oninput = renderHistory;
+qs('#h_month').oninput = renderHistory;
+
 
 // ------- Reports & Expenses -------
 function renderExpensesTable(key){
-  const list = expenses[key]||[];
+  const list = expenses[key] ? Object.keys(expenses[key]).map(id => ({ id, ...expenses[key][id] })) : [];
   const tbody = qs('#expensesTable tbody'); tbody.innerHTML='';
   list.forEach((e,i)=>{
     const tr = document.createElement('tr');
@@ -1983,17 +1991,26 @@ function renderExpensesTable(key){
     tbody.appendChild(tr);
   });
   // delete handler
-  tbody.querySelectorAll('#delExp').forEach(btn=>btn.onclick = ()=>{
+  tbody.querySelectorAll('#delExp').forEach(btn=>btn.onclick = async ()=>{
     const i = Number(btn.dataset.i);
-    list.splice(i,1); expenses[key]=list; DB.save('expenses', expenses); runReport();
+    const expense = list[i];
+    if (expense && expense.id) {
+      try {
+        await RTDB.remove(`expenses/${key}/${expense.id}`);
+        alert('تم حذف المصروف بنجاح');
+      } catch (error) {
+        console.error('Error deleting expense:', error);
+        alert('فشل في حذف المصروف: ' + error.message);
+      }
+    }
   });
 }
 
 function runReport(){
-  const key = qs('#r_month').value || new Date().toISOString().slice(0,7);
+  const key = qs('#r_month').value || monthKey(new Date());
   const rate = Number(settings.rate || 90000);
 
-  const invs = invoices.filter(v => v.date && v.date.startsWith(key));
+  const invs = invoices.filter(v => v.date && monthKey(v.date) === key);
 
   const totalKwh = invs.reduce((s,v)=> s + Number(v.usage||0), 0);
   
@@ -2105,9 +2122,8 @@ async function createMonthlySnapshot(period){
   };
 
   if(DB.useFirebase){
-    // write to tenants/default/reports/{period}
-    const docRef = window.firebase.doc(window.firebase.db, `tenants/default/reports/${period}`);
-    await window.firebase.setDoc(docRef, snapshot);
+    // write to sessions/{sessionId}/reports/{period}
+    await set(ref(db, SessionManager.getSessionPath('reports/' + period)), snapshot);
   } else {
     // local: save to LocalDB under 'archivedReports' map
     const archived = LocalDB.load('archivedReports', {});
@@ -2120,11 +2136,20 @@ async function loadArchivedReportsList(){
   let list = [];
   if(DB.useFirebase){
     try{
-      // naive approach: read entire collection tenants/default/reports
-      const q = window.firebase.query(window.firebase.collection(window.firebase.db, 'tenants/default/reports'));
-      const snaps = await window.firebase.getDocs(q);
-      list = snaps.docs.map(d => ({ id: d.id, ...d.data() }));
-    }catch(e){ console.error('Failed listing archived reports from Firebase', e); list = []; }
+      // read reports from Realtime Database
+      return new Promise((resolve) => {
+        const reportsRef = ref(db, SessionManager.getSessionPath('reports'));
+        onValue(reportsRef, (snapshot) => {
+          const data = snapshot.val();
+          if (data) {
+            const list = Object.keys(data).map(id => ({ id, ...data[id] }));
+            resolve(list);
+          } else {
+            resolve([]);
+          }
+        }, { onlyOnce: true });
+      });
+    }catch(e){ console.error('Failed listing archived reports from Firebase', e); return []; }
   } else {
     const archived = LocalDB.load('archivedReports', {});
     list = Object.keys(archived).map(k => ({ id: k, ...archived[k] }));
@@ -2154,8 +2179,17 @@ async function loadArchivedReportsList(){
 window.viewArchivedReport = async function(id){
   let snap = null;
   if(DB.useFirebase){
-    const d = await window.firebase.getDoc(window.firebase.doc(window.firebase.db, `tenants/default/reports/${id}`));
-    if(d.exists()) snap = d.data();
+    return new Promise((resolve) => {
+      const reportRef = ref(db, SessionManager.getSessionPath('reports/' + id));
+      onValue(reportRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          resolve(data);
+        } else {
+          resolve(null);
+        }
+      }, { onlyOnce: true });
+    });
   } else {
     const archived = LocalDB.load('archivedReports', {});
     snap = archived[id];
@@ -2288,8 +2322,18 @@ function generateArchivedReportHtml(snap){
 window.printArchivedReport = async function(id){
   let snap = null;
   if(DB.useFirebase){
-    const d = await window.firebase.getDoc(window.firebase.doc(window.firebase.db, `tenants/default/reports/${id}`));
-    if(d.exists()) snap = d.data();
+    return new Promise((resolve) => {
+      const reportRef = ref(db, SessionManager.getSessionPath('reports/' + id));
+      onValue(reportRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          const html = generateArchivedReportHtml(data);
+          openPrintWindow(html);
+        } else {
+          alert('التقرير غير موجود');
+        }
+      }, { onlyOnce: true });
+    });
   } else {
     const archived = LocalDB.load('archivedReports', {});
     snap = archived[id];
@@ -2344,6 +2388,7 @@ window.downloadArchivedReportExcel = function(id){
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `report-${id}.csv`; document.body.appendChild(a); a.click(); a.remove();
 };
 qs('#btnRunReport').onclick = runReport;
+qs('#btnPrintAll').onclick = printAllInvoices;
 qs('#btnCloseMonth').onclick = async ()=>{
   const key = qs('#r_month').value || new Date().toISOString().slice(0,7);
   if(!confirm(`سيتم إنشاء تقرير مؤرشف للشهر ${key}. متابعة؟`)) return;
@@ -2353,33 +2398,57 @@ qs('#btnCloseMonth').onclick = async ()=>{
     runReport();
   }catch(e){ console.error(e); alert('فشل في إقفال الشهر: '+e.message); }
 };
-qs('#btnAddExpense').onclick = ()=>{
-  const key = qs('#r_month').value || new Date().toISOString().slice(0,7);
+qs('#btnAddExpense').onclick = async ()=>{
+  const key = qs('#r_month').value || monthKey(new Date());
   const amount = Number(qs('#exp_amount').value||0);
   if(!amount){ alert('أدخل قيمة المصروف'); return; }
+  
+  // Check if month is closed
+  if (isMonthClosed(key)) {
+    alert(`لا يمكن إضافة مصروف لشهر ${key} لأنه مقفول`);
+    return;
+  }
+  
   const currency = qs('#exp_currency').value;
   const note = qs('#exp_note').value||'';
-  const list = expenses[key]||[];
-  list.push({amount,currency,note, ts:Date.now()});
-  expenses[key]=list; DB.save('expenses', expenses);
-  qs('#exp_amount').value=''; qs('#exp_note').value='';
-  runReport();
+  
+  try {
+    const expense = { amount, currency, note, month: key, ts: Date.now() };
+    await RTDB.push(`expenses/${key}`, expense);
+    
+    // Clear form
+    qs('#exp_amount').value=''; 
+    qs('#exp_note').value='';
+    
+    alert('تم إضافة المصروف بنجاح');
+  } catch (error) {
+    console.error('Error adding expense:', error);
+    alert('فشل في إضافة المصروف: ' + error.message);
+  }
 };
 
 // ------- Defaults -------
 function initDefaults(){
   // set default dates/months
   const today = new Date().toISOString().slice(0,10);
-  const ym = today.slice(0,7);
+  const ym = monthKey(new Date());
   qs('#inv_date').value = today;
   qs('#h_month').value = ym;
   qs('#r_month').value = ym;
   if (isInitialized) {
     computeInvoiceTotals();
-    runReport();
+    updateReports();
   }
 }
+// Bind close month button
+document.addEventListener('DOMContentLoaded', () => {
+  const closeBtn = document.getElementById('btnCloseMonth');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', closeMonth);
+  }
+});
 
 </script>
 </body>
 </html>
+
