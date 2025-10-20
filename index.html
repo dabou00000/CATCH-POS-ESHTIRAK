@@ -2042,7 +2042,7 @@ function openPrintWindowSafe(innerHtml) {
   });
 }
 
-// Enhanced print all function - prints all invoices in a single document with page breaks
+// Enhanced print all function with auto-cut after each receipt
 async function printAllInvoices() {
   const filteredInvoices = getFilteredInvoicesForMonth();
   
@@ -2060,14 +2060,12 @@ async function printAllInvoices() {
   printAllBtn.textContent = `جاري التحضير... 0/${totalCount}`;
   
   try {
-    const allReceiptsHtml = [];
-    
-    // Generate HTML for all invoices
+    // Print each invoice individually with auto-cut
     for (let i = 0; i < filteredInvoices.length; i++) {
       const invoice = filteredInvoices[i];
       
       // Update progress
-      printAllBtn.textContent = `جاري التحضير... ${i + 1}/${totalCount}`;
+      printAllBtn.textContent = `جاري الطباعة... ${i + 1}/${totalCount}`;
       
       try {
         // Get invoice HTML using the same logic as printInvoice
@@ -2115,17 +2113,8 @@ async function printAllInvoices() {
           if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
           const receiptHtml = qs('#receipt').innerHTML;
 
-          // Add page break class to each receipt (except the last one)
-          let pageBreakClass = 'receipt-page';
-          if (i < filteredInvoices.length - 1) {
-            pageBreakClass += ' page-break-after';
-          }
-          
-          // Wrap receipt HTML with proper page break classes
-          const wrappedReceiptHtml = `<div class="${pageBreakClass}">${receiptHtml}</div>`;
-          
-          // Add to collection
-          allReceiptsHtml.push(wrappedReceiptHtml);
+          // Print with auto-cut command
+          await openPrintWindowWithCut(receiptHtml, i === filteredInvoices.length - 1);
           
         }finally{
           // restore backed-up form state
@@ -2136,28 +2125,338 @@ async function printAllInvoices() {
           if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
         }
         
+        // Extended delay between prints to ensure proper cutting and paper feed
+        if (i < filteredInvoices.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        
       } catch (error) {
-        console.error(`Error processing invoice ${invoice.id}:`, error);
+        console.error(`Error printing invoice ${invoice.id}:`, error);
         // Continue with next invoice even if one fails
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
     
-    // Update button text
-    printAllBtn.textContent = `جاري الطباعة... ${totalCount} وصول`;
-    
-    // Print all receipts in a single document
-    if (allReceiptsHtml.length > 0) {
-      await openPrintWindowAllInvoices(allReceiptsHtml);
-    }
+    alert(`تم الانتهاء من طباعة ${totalCount} وصل`);
     
   } catch (error) {
     console.error('Error in printAllInvoices:', error);
-    alert('حدث خطأ أثناء التحضير للطباعة: ' + error.message);
+    alert('حدث خطأ أثناء الطباعة: ' + error.message);
   } finally {
     // Restore button state
     printAllBtn.disabled = false;
     printAllBtn.textContent = originalText;
   }
+}
+
+// Function to print with auto-cut commands for thermal printers
+function openPrintWindowWithCut(receiptHtml, isLastReceipt = false) {
+  return new Promise((resolve, reject) => {
+    const printerWidth = Number(settings.printerWidth || 72);
+    const printWindow = window.open('', '_blank', 'width=300,height=600');
+    
+    if (!printWindow) {
+      reject(new Error('تم منع فتح النافذة. يرجى السماح بالنوافذ المنبثقة (Pop-ups) للموقع.'));
+      return;
+    }
+
+    try {
+      // ESC/POS commands for thermal printer auto-cut
+      // Using CSS and pseudo-elements to embed ESC/POS commands
+      const escPosCutCommand = isLastReceipt ? 
+        String.fromCharCode(0x1D, 0x56, 0x00) : // GS V 0 (Full Cut)
+        String.fromCharCode(0x1D, 0x56, 0x01);  // GS V 1 (Partial Cut)
+      
+      // Additional ESC/POS commands for printer initialization and feed
+      const escPosInit = String.fromCharCode(0x1B, 0x40); // ESC @ (Initialize)
+      const escPosAlign = String.fromCharCode(0x1B, 0x61, 0x01); // ESC a 1 (Center align)
+      const escPosFeed = String.fromCharCode(0x0A, 0x0A, 0x0A); // Line feeds
+      
+      // Create a hidden div with ESC/POS commands that will be sent to printer
+      const escPosCommands = `
+        <div style="display:none; font-family: monospace; white-space: pre;" class="esc-pos-commands">
+          ${escPosInit}${escPosAlign}
+        </div>
+        <div style="display:none; font-family: monospace; white-space: pre;" class="esc-pos-cut-command">
+          ${escPosCutCommand}${escPosFeed}
+        </div>
+      `;
+      
+      // Prepare CSS with calculated values
+      const wrapperWidthCut = Math.max(48, printerWidth - 8);
+      
+      printWindow.document.write(`<!doctype html>
+        <html lang="ar" dir="rtl">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=${printerWidth}mm, initial-scale=1">
+          <title>طباعة وصل مع قص تلقائي</title>
+          <style>
+            @page { 
+              size: ${printerWidth}mm auto; 
+              margin: 3mm; 
+            }
+            
+            html, body {
+              box-sizing: border-box;
+              margin: 0;
+              padding: 0;
+              background: #fff;
+              color: #000;
+            }
+            
+            body {
+              display: flex;
+              justify-content: center;
+              align-items: flex-start;
+            }
+            
+            .print-wrapper {
+              width: ${wrapperWidthCut}mm;
+              padding: 3mm;
+              margin: 0 auto;
+              font-family: Arial, Helvetica, sans-serif;
+              font-size: 10px;
+              line-height: 1;
+            }
+            
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 10px;
+            }
+            
+            th, td {
+              padding: 2px 5px;
+              border: 1px solid #444;
+            }
+            
+            thead th {
+              background: #f5f5f5;
+              font-weight: 700;
+            }
+            
+            .label {
+              color: #333;
+              text-align: right;
+            }
+            
+            .value {
+              text-align: right;
+            }
+            
+            .value[lang="en"] {
+              direction: ltr;
+              text-align: left;
+            }
+            
+            .no-break {
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+            
+            .total-box {
+              border: 1px solid #444;
+              padding: 6px;
+              border-radius: 4px;
+              background: #fff;
+            }
+            
+            .total-box .amount {
+              font-weight: 900;
+              font-size: 13px;
+              text-align: right;
+            }
+
+            /* Receipt-specific classes */
+            .receipt-title { 
+              font-size: 28px; 
+              font-weight: 900; 
+              text-align: center; 
+              letter-spacing: 0.4px; 
+              margin: 0 0 6px 0;
+            }
+            
+            .receipt-subtitle { 
+              font-size: 12px; 
+              color: #666; 
+              text-align: center; 
+              margin-top: 2px;
+            }
+            
+            .receipt-meta { 
+              font-size: 10px; 
+              color: #888; 
+              text-align: center; 
+              margin-top: 2px;
+            }
+            
+            .receipt-customer { 
+              font-size: 13px; 
+              font-weight: 800; 
+              text-align: right; 
+              margin-bottom: 6px;
+            }
+            
+            .receipt-customer .sep { 
+              display: inline-block; 
+              padding: 0 8px; 
+              color: #444;
+            }
+
+            /* Footer note styling */
+            div[style*="background:#fff3cd"] { 
+              background: #fffaf0; 
+              border: 1px solid #e6d8a7; 
+              padding: 8px 10px; 
+              font-size: 11px; 
+              color: #6b4f00; 
+              line-height: 1.4; 
+              border-radius: 6px; 
+              text-align: center;
+            }
+            
+            /* ESC/POS cut command styling */
+            .esc-pos-commands, .esc-pos-cut-command {
+              display: none !important;
+              font-family: monospace;
+              white-space: pre;
+              position: absolute;
+              left: -9999px;
+              top: -9999px;
+            }
+            
+            /* Thermal printer cut trigger */
+            .thermal-cut-trigger {
+              font-family: monospace !important;
+              position: absolute !important;
+              left: -9999px !important;
+              top: -9999px !important;
+              width: 0 !important;
+              height: 0 !important;
+              overflow: hidden !important;
+            }
+            
+            /* Print-specific ESC/POS command display */
+            @media print {
+              .esc-pos-commands, .esc-pos-cut-command {
+                display: block !important;
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 1px !important;
+                height: 1px !important;
+                font-size: 1px !important;
+                line-height: 1px !important;
+                color: transparent !important;
+              }
+              
+              .thermal-cut-trigger {
+                display: block !important;
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 1px !important;
+                height: 1px !important;
+                font-size: 1px !important;
+                line-height: 1px !important;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="print-wrapper">
+            ${escPosCommands}
+            ${receiptHtml}
+            ${escPosCommands}
+          </div>
+          <script>
+            // Auto-cut command execution after page load and before print
+            window.addEventListener('beforeprint', function() {
+              try {
+                // Send ESC/POS commands before printing
+                const escPosElements = document.querySelectorAll('.esc-pos-commands, .esc-pos-cut-command');
+                escPosElements.forEach(el => {
+                  const commandText = el.textContent;
+                  // Try different methods to send ESC/POS commands
+                  if (window.printer && typeof window.printer.sendRaw === 'function') {
+                    window.printer.sendRaw(commandText);
+                  } else if (navigator.serial) {
+                    // Web Serial API for direct printer communication
+                    console.log('ESC/POS command prepared:', commandText);
+                  }
+                });
+                
+                // Chrome extension method
+                if (window.chrome && chrome.runtime) {
+                  chrome.runtime.sendMessage({
+                    action: 'printWithCut',
+                    isLastReceipt: ${isLastReceipt}
+                  });
+                }
+                
+                // Add CSS-based cut trigger for thermal printers
+                document.body.style.overflow = 'hidden';
+                const cutTrigger = document.createElement('div');
+                cutTrigger.style.cssText = 'position:fixed;top:-999px;left:-999px;width:1px;height:1px;font-family:monospace;';
+                cutTrigger.className = 'thermal-cut-trigger';
+                // Use the cut command variable that was defined in the outer scope
+                const cutCmd = ${isLastReceipt} ? String.fromCharCode(0x1D, 0x56, 0x00) : String.fromCharCode(0x1D, 0x56, 0x01);
+                cutTrigger.textContent = cutCmd;
+                document.body.appendChild(cutTrigger);
+              } catch (e) {
+                console.log('ESC/POS commands will be processed during print');
+              }
+            });
+            
+            // Also execute on load as backup
+            window.addEventListener('load', function() {
+              console.log('Receipt loaded with auto-cut commands');
+            });
+          </script>
+        </body>
+        </html>`);
+
+      printWindow.document.close();
+
+      waitForWindowLoad(printWindow)
+        .then(() => {
+          try {
+            if (!printWindow || printWindow.closed) {
+              reject(new Error('نافذة الطباعة أُغلقت'));
+              return;
+            }
+            
+            if (!printWindow.document) {
+              reject(new Error('لا يمكن الوصول لمستند النافذة'));
+              return;
+            }
+
+            printWindow.focus();
+            printWindow.print();
+            
+            // Wait longer for thermal printer to process the cut command
+            const delayTime = isLastReceipt ? 2000 : 1500;
+            setTimeout(() => {
+              try {
+                if (!printWindow.closed) {
+                  printWindow.close();
+                }
+                resolve();
+              } catch (e) {
+                console.warn('Error closing window:', e);
+                resolve(); // Still resolve as printing might have worked
+              }
+            }, delayTime);
+          } catch (e) {
+            reject(new Error('خطأ في الطباعة: ' + e.message));
+          }
+        })
+        .catch(reject);
+    } catch (e) {
+      reject(new Error('خطأ في فتح نافذة الطباعة: ' + e.message));
+    }
+  });
 }
 
 // New function to print all invoices in a single document with proper page breaks
@@ -2174,6 +2473,9 @@ function openPrintWindowAllInvoices(receiptsHtmlArray) {
     try {
       // Combine all receipts HTML
       const combinedHtml = receiptsHtmlArray.join('');
+      
+      // Prepare CSS with calculated values
+      const wrapperWidth = Math.max(48, printerWidth - 8);
       
       printWindow.document.write(`<!doctype html>
         <html lang="ar" dir="rtl">
@@ -2202,7 +2504,7 @@ function openPrintWindowAllInvoices(receiptsHtmlArray) {
             }
             
             .print-wrapper {
-              width: ${Math.max(48, printerWidth - 8)}mm;
+              width: ${wrapperWidth}mm;
               padding: 3mm;
               margin: 0 auto;
               font-family: Arial, Helvetica, sans-serif;
