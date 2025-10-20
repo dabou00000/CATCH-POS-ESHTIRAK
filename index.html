@@ -138,6 +138,16 @@
       page-break-inside: avoid; 
     }
     
+    /* فواصل الصفحات للوصولات المتعددة */
+    .receipt-page {
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    
+    .receipt-page.page-break-after {
+      page-break-after: always !important;
+      break-after: page !important;
+    }
     
     /* تحسين الأقسام */
     #printArea div[style*="background:#f8f9fa"] {
@@ -500,81 +510,63 @@
   </section>
 </main>
 
-<!-- Firebase SDK -->
-<script type="module">
-  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
-  import { getDatabase, ref, set, push, onValue, remove, update, get, child } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-database.js';
-  import { getAuth, connectAuthEmulator } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
-  import { getAnalytics, isSupported as analyticsIsSupported } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-analytics.js';
-  
-  // Firebase configuration
-  const firebaseConfig = {
-    apiKey: "AIzaSyAsYlAqSiZknz1P4x48jRJVl6ddJW8hTps",
-    authDomain: "subs-47d7d.firebaseapp.com",
-    projectId: "subs-47d7d",
-    storageBucket: "subs-47d7d.firebasestorage.app",
-    databaseURL: "https://subs-47d7d-default-rtdb.europe-west1.firebasedatabase.app",
-    messagingSenderId: "693207080241",
-    appId: "1:693207080241:web:b63e162fcc3afcfb8ee410",
-    measurementId: "G-VS0FTNPEVK"
-  };
-  
-  // Initialize Firebase
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const db = getDatabase(app);
-  
-  // Development mode - connect to emulators (Auth only)
-  if (window.location.hostname === 'localhost') {
-    try {
-      connectAuthEmulator(auth, 'http://localhost:9099');
-    } catch (e) {
-      console.log('Auth emulator already connected or not available');
-    }
-  }
-  
-  // Make Firebase available globally - using Realtime Database only
-  window.firebase = { app, db, auth, analytics: null, ref, set, push, onValue, remove, update, get, child };
-  
-  // Expose RTDB helpers globally
-  window.db = db;
-  window.ref = ref;
-  window.set = set;
-  window.push = push;
-  window.onValue = onValue;
-  window.remove = remove;
-  window.update = update;
-  window.get = get;
-  window.child = child;
-
-  // Initialize Analytics if supported (avoids errors on unsupported environments)
-  let analytics = null;
-  analyticsIsSupported().then((supported) => {
-    if (supported) {
-      try {
-        analytics = getAnalytics(app);
-        window.firebase.analytics = analytics;
-      } catch (e) {
-        console.log('Analytics not initialized', e);
-      }
-    }
-  });
-</script>
+<!-- Local Storage Database System -->
 
 <script>
+// Local Storage Database System
+const LocalDB = {
+  // Helper to get storage key with prefix
+  getKey(path) {
+    return 'subscription_system_' + path;
+  },
+
+  // Save data to localStorage
+  save(path, data) {
+    try {
+      const key = this.getKey(path);
+      localStorage.setItem(key, JSON.stringify(data));
+      return true;
+    } catch (error) {
+      console.error('Error saving to localStorage:', error);
+      return false;
+    }
+  },
+
+  // Load data from localStorage
+  load(path, defaultValue = null) {
+    try {
+      const key = this.getKey(path);
+      const data = localStorage.getItem(key);
+      return data ? JSON.parse(data) : defaultValue;
+    } catch (error) {
+      console.error('Error loading from localStorage:', error);
+      return defaultValue;
+    }
+  },
+
+  // Remove data from localStorage
+  remove(path) {
+    try {
+      const key = this.getKey(path);
+      localStorage.removeItem(key);
+      return true;
+    } catch (error) {
+      console.error('Error removing from localStorage:', error);
+      return false;
+    }
+  }
+};
+
 // Database initialization
 async function initDatabase() {
   try {
     // Initialize session manager
     SessionManager.init();
     
-    // Test Firebase Realtime Database connection
-    await RTDB.set('test', { test: true, sessionId: SessionManager.sessionId });
-    await RTDB.remove('test');
-    console.log('Firebase Realtime Database connected successfully for session:', SessionManager.sessionId);
+    console.log('Local Storage Database initialized successfully for session:', SessionManager.sessionId);
     return true;
   } catch (error) {
-    console.error('Firebase connection failed:', error);
+    console.error('Local storage initialization failed:', error);
     return false;
   }
 }
@@ -614,55 +606,162 @@ function monthKey(tsOrIso) {
   return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, '0');
 }
 
-// Realtime Database CRUD Operations
+// Local Storage Database Operations (replacing Firebase RTDB)
 const RTDB = {
   subscriptions: new Map(),
   
-  // Subscribe to real-time data
+  // Subscribe to real-time data (simulated with polling)
   subscribe(path, callback) {
-    const fullPath = SessionManager.getSessionPath(path);
-    const dataRef = ref(window.db, fullPath);
+    // Load initial data
+    const data = this._loadData(path);
+    callback(data);
     
-    const unsubscribe = onValue(dataRef, (snapshot) => {
-      const data = snapshot.val();
-      callback(data);
-    });
+    // Set up polling for real-time updates (every 2 seconds)
+    const intervalId = setInterval(() => {
+      const newData = this._loadData(path);
+      callback(newData);
+    }, 2000);
+    
+    const unsubscribe = () => {
+      clearInterval(intervalId);
+      this.subscriptions.delete(path);
+    };
     
     this.subscriptions.set(path, unsubscribe);
     return unsubscribe;
   },
   
+  // Helper to load data based on path structure
+  _loadData(path) {
+    const parts = path.split('/');
+    if (parts.length === 1) {
+      // Simple path like 'customers', 'invoices', etc.
+      return LocalDB.load(parts[0], {});
+    } else {
+      // Nested path like 'expenses/2024-01' or 'customers/123456'
+      const mainKey = parts[0];
+      const nestedKey = parts.slice(1).join('/');
+      const mainData = LocalDB.load(mainKey, {});
+      
+      // Handle nested access - if nestedKey is just an ID, return the item
+      if (parts.length === 2) {
+        return mainData[nestedKey] || null;
+      }
+      // For deeper nesting, navigate through the object
+      let result = mainData;
+      for (const key of parts.slice(1)) {
+        result = result && result[key];
+        if (result === undefined) return null;
+      }
+      return result || null;
+    }
+  },
+  
+  // Helper to save data based on path structure
+  _saveData(path, data) {
+    console.log('_saveData called with:', { path, data });
+    const parts = path.split('/');
+    if (parts.length === 1) {
+      // Simple path
+      LocalDB.save(parts[0], data);
+    } else {
+      // Nested path
+      const mainKey = parts[0];
+      const nestedKey = parts.slice(1);
+      const mainData = LocalDB.load(mainKey, {});
+      
+      console.log('Saving nested data:', { mainKey, nestedKey, mainData, data });
+      
+      // Handle nested saving
+      if (nestedKey.length === 1) {
+        // Direct nested item like 'customers/123456'
+        mainData[nestedKey[0]] = data;
+      } else {
+        // Deeper nesting like 'expenses/2024-01/item123'
+        let target = mainData;
+        for (let i = 0; i < nestedKey.length - 1; i++) {
+          if (!target[nestedKey[i]]) {
+            target[nestedKey[i]] = {};
+          }
+          target = target[nestedKey[i]];
+        }
+        target[nestedKey[nestedKey.length - 1]] = data;
+      }
+      
+      console.log('Final mainData before save:', mainData);
+      LocalDB.save(mainKey, mainData);
+    }
+  },
+  
   // Get data once
   async get(path) {
-    const fullPath = SessionManager.getSessionPath(path);
-    const snapshot = await get(ref(window.db, fullPath));
-    return snapshot.val();
+    return new Promise((resolve) => {
+      resolve(this._loadData(path));
+    });
   },
   
   // Set data
   async set(path, data) {
-    const fullPath = SessionManager.getSessionPath(path);
-    await set(ref(window.db, fullPath), data);
+    return new Promise((resolve) => {
+      this._saveData(path, data);
+      resolve();
+    });
   },
   
   // Push new data (auto-generates ID)
   async push(path, data) {
-    const fullPath = SessionManager.getSessionPath(path);
-    const newRef = push(ref(window.db, fullPath));
-    await set(newRef, data);
-    return newRef.key;
+    return new Promise((resolve) => {
+      const generatedId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+      const newData = { ...data, id: generatedId };
+      
+      // Get existing data
+      const existingData = this._loadData(path) || {};
+      existingData[generatedId] = newData;
+      
+      this._saveData(path, existingData);
+      resolve(generatedId);
+    });
   },
   
   // Update specific fields
   async update(path, updates) {
-    const fullPath = SessionManager.getSessionPath(path);
-    await update(ref(window.db, fullPath), updates);
+    return new Promise((resolve) => {
+      const existingData = this._loadData(path) || {};
+      const updatedData = { ...existingData, ...updates };
+      this._saveData(path, updatedData);
+      resolve();
+    });
   },
   
   // Remove data
   async remove(path) {
-    const fullPath = SessionManager.getSessionPath(path);
-    await remove(ref(window.db, fullPath));
+    return new Promise((resolve) => {
+      const parts = path.split('/');
+      if (parts.length === 1) {
+        LocalDB.remove(parts[0]);
+      } else {
+        const mainKey = parts[0];
+        const nestedKeys = parts.slice(1);
+        const mainData = LocalDB.load(mainKey, {});
+        
+        if (nestedKeys.length === 1) {
+          // Remove direct nested item like 'customers/123456'
+          delete mainData[nestedKeys[0]];
+        } else {
+          // Remove deeply nested item
+          let target = mainData;
+          for (let i = 0; i < nestedKeys.length - 1; i++) {
+            if (!target[nestedKeys[i]]) break;
+            target = target[nestedKeys[i]];
+          }
+          if (target && nestedKeys.length > 0) {
+            delete target[nestedKeys[nestedKeys.length - 1]];
+          }
+        }
+        LocalDB.save(mainKey, mainData);
+      }
+      resolve();
+    });
   },
   
   // Cleanup all subscriptions
@@ -691,7 +790,19 @@ function setupRealtimeListeners() {
   
   // Listen to invoices
   RTDB.subscribe('invoices', (data) => {
-    invoices = data ? Object.keys(data).map(id => ({ id, ...data[id] })) : [];
+    console.log('RTDB.subscribe invoices data:', data);
+    if (data) {
+      invoices = Object.keys(data).map(id => {
+        const invoice = { ...data[id] };
+        // Ensure id is always a string
+        invoice.id = String(id);
+        console.log('Loading invoice:', { id, invoice });
+        return invoice;
+      });
+    } else {
+      invoices = [];
+    }
+    console.log('Final invoices array:', invoices);
     renderHistory();
     updateReports();
   });
@@ -734,11 +845,11 @@ async function initializeApp() {
     // Initialize database
     const dbConnected = await initDatabase();
     if (!dbConnected) {
-      alert('فشل في الاتصال بقاعدة البيانات. تأكد من الاتصال بالإنترنت.');
+      alert('فشل في تهيئة النظام المحلي.');
       return;
     }
     
-    console.log('Database initialized: Firebase Realtime Database');
+    console.log('Database initialized: Local Storage Database');
     
     // Setup real-time listeners
     setupRealtimeListeners();
@@ -953,7 +1064,16 @@ async function reloadInvoices(){
   try{
     console.log('Reloading invoices from RTDB...');
     const invoicesData = await RTDB.get('invoices');
-    invoices = invoicesData ? Object.keys(invoicesData).map(id => ({ id, ...invoicesData[id] })) : [];
+    if (invoicesData) {
+      invoices = Object.keys(invoicesData).map(id => {
+        const invoice = { ...invoicesData[id] };
+        // Ensure id is always a string
+        invoice.id = String(id);
+        return invoice;
+      });
+    } else {
+      invoices = [];
+    }
     console.log('Reloaded invoices count=', invoices.length);
     // dedupe by id (keep last occurrence)
     invoices = dedupeInvoices(invoices);
@@ -1463,7 +1583,7 @@ qs('#btnSaveInvoice').onclick = async ()=>{
     
     const usage = Number(qs('#inv_usage').value||0);
     const period = (date || new Date().toISOString().slice(0,10)).slice(0,7);
-    const issuedAt = (window.firebase && window.firebase.serverTimestamp) ? window.firebase.serverTimestamp() : new Date().toISOString();
+    const issuedAt = new Date().toISOString();
 
     const extrasArr = extra > 0 ? [{ label: extraNote || 'دفعة إضافية', value: extra, currency: qs('#inv_extra_currency').value }] : [];
 
@@ -1538,7 +1658,8 @@ function renderHistory(){
   list = list.filter(v => {
     const invoiceMonth = monthKey(v.date);
     const matchesMonth = invoiceMonth === month;
-    const matchesSearch = !q || (v.customerName+v.id).toLowerCase().includes(q);
+    const searchText = (v.customerName || '') + String(v.id || '');
+    const matchesSearch = !q || searchText.toLowerCase().includes(q);
     return matchesMonth && matchesSearch;
   });
 
@@ -1568,14 +1689,55 @@ function renderHistory(){
       totalLBP = Math.round(totalUSD * rate);
     }
     
+    // Ensure we display the correct invoice number/id
+    let displayId;
+    
+    // Handle case where v.id might be an object (fallback from old data)
+    let invoiceId;
+    
+    // Fix for object ID issue: prioritize invoiceNumber field first
+    if (v.invoiceNumber && typeof v.invoiceNumber === 'string') {
+      invoiceId = v.invoiceNumber;
+    } else if (typeof v.id === 'object' && v.id !== null) {
+      // Handle object case - try to extract meaningful data
+      if (v.id.invoiceNumber) {
+        invoiceId = v.id.invoiceNumber;
+      } else if (v.id.id) {
+        invoiceId = String(v.id.id);
+      } else if (v.id.toString && v.id.toString() !== '[object Object]') {
+        invoiceId = v.id.toString();
+      } else {
+        // Fallback to a generated ID if object is empty/invalid
+        invoiceId = `ID-${Math.random().toString(36).substr(2, 9)}`;
+      }
+    } else if (v.id) {
+      invoiceId = String(v.id);
+    } else {
+      invoiceId = `ID-${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
+    // Ensure we have a valid string display ID
+    displayId = String(invoiceId || 'غير محدد');
+    
+    const safeId = String(invoiceId || '').replace(/'/g, "\\'");
+    
+    // Debug log for troubleshooting
+    console.log('Invoice display debug:', {
+      originalId: v.id,
+      invoiceNumber: v.invoiceNumber,
+      processedInvoiceId: invoiceId,
+      displayId: displayId,
+      safeId: safeId
+    });
+    
     tr.innerHTML = `
-      <td>${v.id}</td>
+      <td>${displayId}</td>
       <td>${v.date}</td>
       <td>${v.customerName}</td>
       <td style="text-align:left">${Number(v.usage||0).toLocaleString('en-US')}</td>
       <td style="text-align:left">${totalUSD.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})} USD</td>
       <td style="text-align:left">${totalLBP.toLocaleString('en-US')} LBP</td>
-      <td class="hide-print"><button class="btn ghost" onclick="printInvoice('${v.id}')">طباعة</button></td>
+      <td class="hide-print"><button class="btn ghost" onclick="printInvoice('${safeId}')">طباعة</button></td>
     `;
     tbody.appendChild(tr);
   });
@@ -1631,15 +1793,8 @@ function openPrintWindow(innerHtml){
 async function printInvoice(invoiceId){
   try {
     console.log('printInvoice called for', invoiceId);
-    const inMemory = invoices.find(x=>String(x.id)===String(invoiceId));
-    console.log('in-memory invoice (from invoices array):', inMemory);
-    let inv = null;
-    if (DB.useFirebase) {
-      inv = await FirebaseDB.getInvoice(invoiceId);
-      console.log('fetched invoice from Firebase:', inv);
-    } else {
-      inv = inMemory;
-    }
+    const inv = invoices.find(x=>String(x.id)===String(invoiceId));
+    console.log('in-memory invoice (from invoices array):', inv);
     if (!inv) {
       console.warn('Invoice not found in DB or memory for id', invoiceId);
     }
@@ -1772,12 +1927,28 @@ function getFilteredInvoicesForMonth() {
   
   return invoices
     .slice()
-    .sort((a,b)=> a.date.localeCompare(b.date)) // Sort by date ascending for sequential printing
     .filter(v => {
       const invoiceMonth = monthKey(v.date);
       const matchesMonth = invoiceMonth === month;
-      const matchesSearch = !q || (v.customerName+v.id).toLowerCase().includes(q);
+      const searchText = (v.customerName || '') + String(v.id || '');
+      const matchesSearch = !q || searchText.toLowerCase().includes(q);
       return matchesMonth && matchesSearch;
+    })
+    .sort((a,b)=> {
+      // Sort by invoice number/receipt number first, then by date as secondary sort
+      const aId = String(a.invoiceNumber || a.id || '');
+      const bId = String(b.invoiceNumber || b.id || '');
+      
+      // If both have numeric invoice numbers, sort numerically
+      const aNum = aId.match(/\d+/) ? parseInt(aId.match(/\d+/)[0]) : 0;
+      const bNum = bId.match(/\d+/) ? parseInt(bId.match(/\d+/)[0]) : 0;
+      
+      if (aNum !== bNum) {
+        return aNum - bNum;
+      }
+      
+      // If numeric parts are equal, sort by full string
+      return aId.localeCompare(bId);
     });
 }
 
@@ -1871,7 +2042,7 @@ function openPrintWindowSafe(innerHtml) {
   });
 }
 
-// Sequential print all function
+// Enhanced print all function - prints all invoices in a single document with page breaks
 async function printAllInvoices() {
   const filteredInvoices = getFilteredInvoicesForMonth();
   
@@ -1886,14 +2057,17 @@ async function printAllInvoices() {
   
   // Disable button and show progress
   printAllBtn.disabled = true;
-  printAllBtn.textContent = `جاري الطباعة... 0/${totalCount}`;
+  printAllBtn.textContent = `جاري التحضير... 0/${totalCount}`;
   
   try {
+    const allReceiptsHtml = [];
+    
+    // Generate HTML for all invoices
     for (let i = 0; i < filteredInvoices.length; i++) {
       const invoice = filteredInvoices[i];
       
       // Update progress
-      printAllBtn.textContent = `جاري الطباعة... ${i + 1}/${totalCount}`;
+      printAllBtn.textContent = `جاري التحضير... ${i + 1}/${totalCount}`;
       
       try {
         // Get invoice HTML using the same logic as printInvoice
@@ -1941,8 +2115,17 @@ async function printAllInvoices() {
           if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
           const receiptHtml = qs('#receipt').innerHTML;
 
-          // print using the safe function
-          await openPrintWindowSafe(receiptHtml);
+          // Add page break class to each receipt (except the last one)
+          let pageBreakClass = 'receipt-page';
+          if (i < filteredInvoices.length - 1) {
+            pageBreakClass += ' page-break-after';
+          }
+          
+          // Wrap receipt HTML with proper page break classes
+          const wrappedReceiptHtml = `<div class="${pageBreakClass}">${receiptHtml}</div>`;
+          
+          // Add to collection
+          allReceiptsHtml.push(wrappedReceiptHtml);
           
         }finally{
           // restore backed-up form state
@@ -1953,26 +2136,238 @@ async function printAllInvoices() {
           if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
         }
         
-        // Small delay between prints
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
       } catch (error) {
-        console.error(`Error printing invoice ${invoice.id}:`, error);
+        console.error(`Error processing invoice ${invoice.id}:`, error);
         // Continue with next invoice even if one fails
-        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
     
-    alert(`تم الانتهاء من طباعة ${totalCount} وصل`);
+    // Update button text
+    printAllBtn.textContent = `جاري الطباعة... ${totalCount} وصول`;
+    
+    // Print all receipts in a single document
+    if (allReceiptsHtml.length > 0) {
+      await openPrintWindowAllInvoices(allReceiptsHtml);
+    }
     
   } catch (error) {
     console.error('Error in printAllInvoices:', error);
-    alert('حدث خطأ أثناء الطباعة: ' + error.message);
+    alert('حدث خطأ أثناء التحضير للطباعة: ' + error.message);
   } finally {
     // Restore button state
     printAllBtn.disabled = false;
     printAllBtn.textContent = originalText;
   }
+}
+
+// New function to print all invoices in a single document with proper page breaks
+function openPrintWindowAllInvoices(receiptsHtmlArray) {
+  return new Promise((resolve, reject) => {
+    const printerWidth = Number(settings.printerWidth || 72);
+    const printWindow = window.open('', '_blank', 'width=300,height=600');
+    
+    if (!printWindow) {
+      reject(new Error('تم منع فتح النافذة. يرجى السماح بالنوافذ المنبثقة (Pop-ups) للموقع.'));
+      return;
+    }
+
+    try {
+      // Combine all receipts HTML
+      const combinedHtml = receiptsHtmlArray.join('');
+      
+      printWindow.document.write(`<!doctype html>
+        <html lang="ar" dir="rtl">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=${printerWidth}mm, initial-scale=1">
+          <title>طباعة جميع الوصولات</title>
+          <style>
+            @page { 
+              size: ${printerWidth}mm auto; 
+              margin: 3mm; 
+            }
+            
+            html, body {
+              box-sizing: border-box;
+              margin: 0;
+              padding: 0;
+              background: #fff;
+              color: #000;
+            }
+            
+            body {
+              display: flex;
+              justify-content: center;
+              align-items: flex-start;
+            }
+            
+            .print-wrapper {
+              width: ${Math.max(48, printerWidth - 8)}mm;
+              padding: 3mm;
+              margin: 0 auto;
+              font-family: Arial, Helvetica, sans-serif;
+              font-size: 10px;
+              line-height: 1;
+            }
+            
+            /* Page break styles for receipts */
+            .receipt-page {
+              page-break-inside: avoid;
+              break-inside: avoid;
+              margin-bottom: 0;
+            }
+            
+            .receipt-page.page-break-after {
+              page-break-after: always;
+              break-after: page;
+            }
+            
+            .receipt-page:last-child {
+              page-break-after: auto;
+              break-after: auto;
+            }
+            
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 10px;
+            }
+            
+            th, td {
+              padding: 2px 5px;
+              border: 1px solid #444;
+            }
+            
+            thead th {
+              background: #f5f5f5;
+              font-weight: 700;
+            }
+            
+            .label {
+              color: #333;
+              text-align: right;
+            }
+            
+            .value {
+              text-align: right;
+            }
+            
+            .value[lang="en"] {
+              direction: ltr;
+              text-align: left;
+            }
+            
+            .no-break {
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+            
+            .total-box {
+              border: 1px solid #444;
+              padding: 6px;
+              border-radius: 4px;
+              background: #fff;
+            }
+            
+            .total-box .amount {
+              font-weight: 900;
+              font-size: 13px;
+              text-align: right;
+            }
+
+            /* Receipt-specific classes */
+            .receipt-title { 
+              font-size: 28px; 
+              font-weight: 900; 
+              text-align: center; 
+              letter-spacing: 0.4px; 
+              margin: 0 0 6px 0;
+            }
+            
+            .receipt-subtitle { 
+              font-size: 12px; 
+              color: #666; 
+              text-align: center; 
+              margin-top: 2px;
+            }
+            
+            .receipt-meta { 
+              font-size: 10px; 
+              color: #888; 
+              text-align: center; 
+              margin-top: 2px;
+            }
+            
+            .receipt-customer { 
+              font-size: 13px; 
+              font-weight: 800; 
+              text-align: right; 
+              margin-bottom: 6px;
+            }
+            
+            .receipt-customer .sep { 
+              display: inline-block; 
+              padding: 0 8px; 
+              color: #444;
+            }
+
+            /* Footer note styling */
+            div[style*="background:#fff3cd"] { 
+              background: #fffaf0; 
+              border: 1px solid #e6d8a7; 
+              padding: 8px 10px; 
+              font-size: 11px; 
+              color: #6b4f00; 
+              line-height: 1.4; 
+              border-radius: 6px; 
+              text-align: center;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="print-wrapper">${combinedHtml}</div>
+        </body>
+        </html>`);
+
+      printWindow.document.close();
+
+      waitForWindowLoad(printWindow)
+        .then(() => {
+          try {
+            if (!printWindow || printWindow.closed) {
+              reject(new Error('نافذة الطباعة أُغلقت'));
+              return;
+            }
+            
+            if (!printWindow.document) {
+              reject(new Error('لا يمكن الوصول لمستند النافذة'));
+              return;
+            }
+
+            printWindow.focus();
+            printWindow.print();
+            
+            // Wait a bit for print dialog and then close
+            setTimeout(() => {
+              try {
+                if (!printWindow.closed) {
+                  printWindow.close();
+                }
+                resolve();
+              } catch (e) {
+                console.warn('Error closing window:', e);
+                resolve(); // Still resolve as printing might have worked
+              }
+            }, 1500);
+          } catch (e) {
+            reject(new Error('خطأ في الطباعة: ' + e.message));
+          }
+        })
+        .catch(reject);
+    } catch (e) {
+      reject(new Error('خطأ في فتح نافذة الطباعة: ' + e.message));
+    }
+  });
 }
 
 renderHistory();
@@ -2104,7 +2499,7 @@ async function createMonthlySnapshot(period){
   // prepare snapshot object
   const snapshot = {
     period,
-    createdAt: (window.firebase && window.firebase.serverTimestamp) ? window.firebase.serverTimestamp() : new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     dateRange: { start, end, timezone: 'Asia/Beirut' },
     exchangeRateUsed: rate,
     pricePerKwhUsd: settings.priceUSD || null,
@@ -2121,39 +2516,15 @@ async function createMonthlySnapshot(period){
     invoiceIds
   };
 
-  if(DB.useFirebase){
-    // write to sessions/{sessionId}/reports/{period}
-    await set(ref(db, SessionManager.getSessionPath('reports/' + period)), snapshot);
-  } else {
-    // local: save to LocalDB under 'archivedReports' map
-    const archived = LocalDB.load('archivedReports', {});
-    archived[period] = snapshot;
-    LocalDB.save('archivedReports', archived);
-  }
+  // Save to LocalDB under 'archivedReports' map
+  const archived = LocalDB.load('archivedReports', {});
+  archived[period] = snapshot;
+  LocalDB.save('archivedReports', archived);
 }
 
 async function loadArchivedReportsList(){
-  let list = [];
-  if(DB.useFirebase){
-    try{
-      // read reports from Realtime Database
-      return new Promise((resolve) => {
-        const reportsRef = ref(db, SessionManager.getSessionPath('reports'));
-        onValue(reportsRef, (snapshot) => {
-          const data = snapshot.val();
-          if (data) {
-            const list = Object.keys(data).map(id => ({ id, ...data[id] }));
-            resolve(list);
-          } else {
-            resolve([]);
-          }
-        }, { onlyOnce: true });
-      });
-    }catch(e){ console.error('Failed listing archived reports from Firebase', e); return []; }
-  } else {
-    const archived = LocalDB.load('archivedReports', {});
-    list = Object.keys(archived).map(k => ({ id: k, ...archived[k] }));
-  }
+  const archived = LocalDB.load('archivedReports', {});
+  const list = Object.keys(archived).map(k => ({ id: k, ...archived[k] }));
 
   // sort newest first
   list.sort((a,b)=> b.id.localeCompare(a.id));
@@ -2177,23 +2548,8 @@ async function loadArchivedReportsList(){
 
 // expose helpers to global scope for inline onclick handlers
 window.viewArchivedReport = async function(id){
-  let snap = null;
-  if(DB.useFirebase){
-    return new Promise((resolve) => {
-      const reportRef = ref(db, SessionManager.getSessionPath('reports/' + id));
-      onValue(reportRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          resolve(data);
-        } else {
-          resolve(null);
-        }
-      }, { onlyOnce: true });
-    });
-  } else {
-    const archived = LocalDB.load('archivedReports', {});
-    snap = archived[id];
-  }
+  const archived = LocalDB.load('archivedReports', {});
+  const snap = archived[id];
   if(!snap){ alert('التقرير غير موجود'); return; }
   // render a simple view inside reportArea
   const html = `<h3>تقرير ${id}</h3>
@@ -2320,24 +2676,8 @@ function generateArchivedReportHtml(snap){
 }
 
 window.printArchivedReport = async function(id){
-  let snap = null;
-  if(DB.useFirebase){
-    return new Promise((resolve) => {
-      const reportRef = ref(db, SessionManager.getSessionPath('reports/' + id));
-      onValue(reportRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          const html = generateArchivedReportHtml(data);
-          openPrintWindow(html);
-        } else {
-          alert('التقرير غير موجود');
-        }
-      }, { onlyOnce: true });
-    });
-  } else {
-    const archived = LocalDB.load('archivedReports', {});
-    snap = archived[id];
-  }
+  const archived = LocalDB.load('archivedReports', {});
+  const snap = archived[id];
   if(!snap){ alert('التقرير غير موجود'); return; }
   const html = generateArchivedReportHtml(snap);
   openPrintWindow(html);
