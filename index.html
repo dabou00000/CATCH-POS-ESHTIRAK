@@ -102,82 +102,11 @@
     /* فاصل صفحات لكل فاتورة */
     .invoice-page { 
       page-break-after: always; 
-      break-after: page;
     }
     
     /* تجنب قطع الجداول */
     .invoice-page table { 
       page-break-inside: avoid; 
-      break-inside: avoid;
-    }
-    
-    /* إجبار فاصل صفحة بعد كل فاتورة */
-    .invoice-page:last-child {
-      page-break-after: auto;
-    }
-    
-    /* حل حديث مضمون للفصل التلقائي */
-    @page { 
-      size: 80mm auto; 
-      margin: 0; 
-    }
-    
-    body { 
-      -webkit-print-color-adjust: exact; 
-      print-color-adjust: exact;
-    }
-    
-    .receipts-wrapper { 
-      display: block !important; 
-    }
-    
-    .receipt {
-      display: block !important;
-      break-after: page;              /* الحديث */
-      page-break-after: always;       /* احتياطي */
-      break-inside: avoid;
-      width: 100% !important;
-      max-width: 80mm !important;
-      margin: 0 auto !important;
-      padding: 0 !important;
-      border: none !important;
-      box-shadow: none !important;
-    }
-    
-    .receipt:last-child { 
-      break-after: auto !important; 
-      page-break-after: auto !important; 
-    }
-    
-    /* قص تلقائي للطابعات الحرارية */
-    .invoice-page[data-auto-cut="true"] {
-      position: relative;
-    }
-    
-    .invoice-page[data-auto-cut="true"]::after {
-      content: "";
-      display: block;
-      height: 0;
-      margin: 0;
-      padding: 0;
-      /* إضافة مسافة إضافية للقص */
-      margin-bottom: 10mm;
-    }
-    
-    /* تحسين الطباعة للطابعات الحرارية */
-    @media print {
-      .invoice-page {
-        margin: 0;
-        padding: 0;
-        border: none;
-        box-shadow: none;
-      }
-      
-      /* إجبار فاصل صفحة بعد كل فاتورة عدا الأخيرة */
-      .invoice-page:not(:last-child) {
-        page-break-after: always !important;
-        break-after: page !important;
-      }
     }
 
     /* ضبط مساحة الفاتورة للـ POS */
@@ -1989,33 +1918,130 @@ function getFilteredInvoicesForMonth() {
   const startDate = new Date(selectedMonth + '-01T00:00:00');
   const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 1, 0, 0, 0);
   
-  console.log('Filtering invoices for month:', selectedMonth);
-  console.log('Date range:', startDate.toISOString(), 'to', endDate.toISOString());
-  console.log('Total invoices available:', invoices.length);
-  
   return invoices
     .slice()
-    .sort((a,b)=> {
-      // Sort by date first, then by invoice number for consistent ordering
-      const dateCompare = a.date.localeCompare(b.date);
-      if (dateCompare !== 0) return dateCompare;
-      
-      // If dates are equal, sort by invoice number
-      const aNum = String(a.invoiceNumber || a.id || '').replace(/[^\d]/g, '');
-      const bNum = String(b.invoiceNumber || b.id || '').replace(/[^\d]/g, '');
-      return Number(aNum) - Number(bNum);
-    })
+    .sort((a,b)=> a.date.localeCompare(b.date)) // Sort by date ascending for sequential printing
     .filter(v => {
       // Use local timezone for date comparison
       const invoiceDate = new Date(v.date + 'T00:00:00');
       const matchesMonth = invoiceDate >= startDate && invoiceDate < endDate;
       const searchText = (v.customerName || '') + String(v.id || '');
       const matchesSearch = !q || searchText.toLowerCase().includes(q);
-      
-      console.log('Invoice:', v.id, 'Date:', v.date, 'InvoiceDate:', invoiceDate.toISOString(), 'Matches:', matchesMonth);
-      
       return matchesMonth && matchesSearch;
     });
+}
+
+// Print single receipt with auto-cut for thermal printers
+async function printReceiptWithAutoCut(receiptHtml) {
+  try {
+    // Create a print window for this single receipt
+    const printWindow = window.open('', '_blank', 'width=300,height=600');
+    
+    if (!printWindow) {
+      throw new Error('تم منع فتح النافذة. يرجى السماح بالنوافذ المنبثقة (Pop-ups) للموقع.');
+    }
+
+    // Add auto-cut CSS for thermal printers
+    const autoCutCSS = `
+      <style>
+        @media print {
+          @page { 
+            size: 80mm auto; 
+            margin: 0; 
+          }
+          
+          body { 
+            -webkit-print-color-adjust: exact; 
+            print-color-adjust: exact;
+          }
+          
+          .receipt {
+            page-break-after: always !important;
+            break-after: page !important;
+            width: 100% !important;
+            max-width: 80mm !important;
+            margin: 0 auto !important;
+            padding: 0 !important;
+            border: none !important;
+            box-shadow: none !important;
+            font-family: 'Courier New', monospace !important;
+            font-size: 10px !important;
+            line-height: 1.2 !important;
+          }
+          
+          /* Auto-cut command for thermal printers */
+          .receipt::after {
+            content: "\\f\\f\\f"; /* Form feed for auto-cut */
+            display: block;
+            height: 0;
+            margin: 0;
+            padding: 0;
+            font-size: 0;
+            line-height: 0;
+          }
+          
+          /* Additional auto-cut support for different printer types */
+          .receipt {
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          
+          /* Force page break and cut for thermal printers */
+          .receipt {
+            page-break-after: always !important;
+            break-after: page !important;
+            -webkit-break-after: page !important;
+            -moz-break-after: page !important;
+            -ms-break-after: page !important;
+          }
+        }
+      </style>
+    `;
+
+    const fullHtml = `
+      <!doctype html>
+      <html lang="ar" dir="rtl">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=80mm, initial-scale=1">
+        <title>طباعة وصل</title>
+        ${autoCutCSS}
+      </head>
+      <body>
+        <div class="receipt">${receiptHtml}</div>
+      </body>
+      </html>
+    `;
+
+    printWindow.document.write(fullHtml);
+    printWindow.document.close();
+
+    // Wait for window to load
+    await new Promise((resolve) => {
+      printWindow.addEventListener('load', resolve, { once: true });
+      setTimeout(resolve, 500); // Fallback timeout
+    });
+
+    // Print the receipt with auto-cut
+    printWindow.focus();
+    printWindow.print();
+    
+    // Wait for print dialog and then close
+    setTimeout(() => {
+      try {
+        if (!printWindow.closed) {
+          printWindow.close();
+        }
+      } catch (e) {
+        console.warn('Error closing window:', e);
+      }
+    }, 2000); // Increased timeout for thermal printer processing
+
+    return true;
+  } catch (error) {
+    console.error('Error printing receipt with auto-cut:', error);
+    return false;
+  }
 }
 
 // Enhanced print window function with proper error handling
@@ -2108,180 +2134,7 @@ function openPrintWindowSafe(innerHtml) {
   });
 }
 
-// Detect printer type and add appropriate cut commands
-function detectPrinterType() {
-  // Check if ESC/POS printer is available
-  if (typeof navigator !== 'undefined' && navigator.serial) {
-    return 'escpos';
-  }
-  // Check for WebUSB (ESC/POS over USB)
-  if (typeof navigator !== 'undefined' && navigator.usb) {
-    return 'escpos';
-  }
-  // Default to browser printing
-  return 'browser';
-}
-
-// Add ESC/POS cut commands to receipt HTML
-function addESCPOSCutCommands(html) {
-  // ESC/POS cut command: ESC d n (where n is number of lines to cut)
-  const cutCommand = '\x1B\x64\x00'; // Full cut
-  const partialCutCommand = '\x1B\x64\x01'; // Partial cut
-  
-  // Add cut command after each receipt
-  return html.replace(/<\/div>\s*<div class="receipt"/g, 
-    `</div>${cutCommand}<div class="receipt"`);
-}
-
-// Print directly to ESC/POS printer with cut commands
-async function printToESCPOS(receipts) {
-  try {
-    // Check if Web Serial API is available
-    if (!navigator.serial) {
-      throw new Error('Web Serial API not supported');
-    }
-    
-    // Request port access
-    const port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 9600 });
-    
-    const writer = port.writable.getWriter();
-    
-    // ESC/POS initialization commands
-    await writer.write(new Uint8Array([0x1B, 0x40])); // ESC @ (Initialize)
-    await writer.write(new Uint8Array([0x1B, 0x61, 0x01])); // ESC a 1 (Center alignment)
-    
-    for (let i = 0; i < receipts.length; i++) {
-      const receipt = receipts[i];
-      
-      // Convert HTML to plain text for ESC/POS
-      const textContent = receipt.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      
-      // Send receipt data
-      await writer.write(new TextEncoder().encode(textContent + '\n'));
-      
-      // Add cut command after each receipt (except the last one)
-      if (i < receipts.length - 1) {
-        await writer.write(new Uint8Array([0x1B, 0x64, 0x00])); // ESC d 0 (full cut)
-        await writer.write(new Uint8Array([0x0A, 0x0A])); // Line feeds
-      }
-    }
-    
-    // Final cut after last receipt
-    await writer.write(new Uint8Array([0x1B, 0x64, 0x00])); // ESC d 0 (full cut)
-    
-    await writer.close();
-    await port.close();
-    
-    return true;
-  } catch (error) {
-    console.error('ESC/POS printing failed:', error);
-    return false;
-  }
-}
-
-// Add auto-cut support for thermal printers
-function addAutoCutSupport(html) {
-  const printerType = detectPrinterType();
-  
-  // For ESC/POS printers, add cut commands
-  if (printerType === 'escpos') {
-    return addESCPOSCutCommands(html);
-  }
-  
-  // For browser printing, add CSS for auto-cut and print optimization
-  const autoCutCSS = `
-    <style>
-      @media print {
-        .invoice-page[data-auto-cut="true"]::after {
-          content: "\\f\\f\\f"; /* Form feed for auto-cut */
-          display: block;
-          height: 0;
-          margin: 0;
-          padding: 0;
-          font-size: 0;
-          line-height: 0;
-        }
-        
-        /* تحسين الطباعة للطابعات الحرارية */
-        .invoice-page {
-          margin: 0 !important;
-          padding: 0 !important;
-          border: none !important;
-          box-shadow: none !important;
-          page-break-inside: avoid !important;
-        }
-        
-        /* إجبار فاصل صفحة بعد كل فاتورة عدا الأخيرة */
-        .invoice-page:not(:last-child) {
-          page-break-after: always !important;
-          break-after: page !important;
-        }
-        
-        /* حل حديث مضمون للفصل التلقائي */
-        @page { 
-          size: 80mm auto; 
-          margin: 0; 
-        }
-        
-        body { 
-          -webkit-print-color-adjust: exact; 
-          print-color-adjust: exact;
-        }
-        
-        .receipts-wrapper { 
-          display: block !important; 
-        }
-        
-        .receipt {
-          display: block !important;
-          break-after: page;              /* الحديث */
-          page-break-after: always;       /* احتياطي */
-          break-inside: avoid;
-          width: 100% !important;
-          max-width: 80mm !important;
-          margin: 0 auto !important;
-          padding: 0 !important;
-          border: none !important;
-          box-shadow: none !important;
-        }
-        
-        .receipt:last-child { 
-          break-after: auto !important; 
-          page-break-after: auto !important; 
-        }
-        
-        /* تحسين الخطوط للطباعة */
-        body, .invoice-page, .receipt {
-          font-family: 'Courier New', monospace !important;
-          font-size: 10px !important;
-          line-height: 1.2 !important;
-        }
-        
-        /* إجبار فصل الصفحات في جميع المتصفحات */
-        .receipt {
-          -webkit-break-after: page !important;
-          -moz-break-after: page !important;
-          -ms-break-after: page !important;
-          break-after: page !important;
-          page-break-after: always !important;
-        }
-        
-        .receipt:last-child {
-          -webkit-break-after: auto !important;
-          -moz-break-after: auto !important;
-          -ms-break-after: auto !important;
-          break-after: auto !important;
-          page-break-after: auto !important;
-        }
-      }
-    </style>
-  `;
-  
-  return autoCutCSS + html;
-}
-
-// Enhanced print all function - collect all invoices and print once
+// Sequential print all function with auto-cut after each receipt
 async function printAllInvoices() {
   const filteredInvoices = getFilteredInvoicesForMonth();
   
@@ -2289,46 +2142,39 @@ async function printAllInvoices() {
     alert('لا توجد وصولات لهذا الشهر');
     return;
   }
-  
-  // Show confirmation dialog
-  const selectedMonth = qs('#h_month').value || monthKey(new Date());
-  const monthName = new Date(selectedMonth + '-01').toLocaleDateString('ar-SA', { year: 'numeric', month: 'long', calendar: 'gregory' });
-  if (!confirm(`هل تريد طباعة جميع فواتير شهر ${monthName}؟\nعدد الفواتير: ${filteredInvoices.length}`)) {
-    return;
-  }
 
   const printAllBtn = qs('#btnPrintAll');
   const originalText = printAllBtn.textContent;
   const totalCount = filteredInvoices.length;
   
+  // Show confirmation dialog
+  const selectedMonth = qs('#h_month').value || monthKey(new Date());
+  const monthName = new Date(selectedMonth + '-01').toLocaleDateString('ar-SA', { year: 'numeric', month: 'long', calendar: 'gregory' });
+  if (!confirm(`هل تريد طباعة جميع فواتير شهر ${monthName}؟\nعدد الفواتير: ${filteredInvoices.length}\nكل وصل سيتم طباعته بعملية مستقلة مع قص تلقائي`)) {
+    return;
+  }
+
   // Disable button and show progress
   printAllBtn.disabled = true;
-  printAllBtn.textContent = `جاري تجميع الفواتير... ${totalCount} وصل`;
+  printAllBtn.textContent = `جاري الطباعة... 0/${totalCount}`;
   
   try {
-    // Create a container to collect all invoice HTMLs
-    const allInvoicesHtml = [];
-    
-    // backup form state
-    const backup = {};
-    const fields = ['#inv_prev','#inv_curr','#inv_price_kwh','#inv_monthly','#inv_extra','#inv_extra_currency','#inv_extra_note','#inv_discount','#inv_base_currency','#inv_date','#inv_customer'];
-    fields.forEach(k=>{ const el = qs(k); backup[k]= el ? el.value : null; });
-    const backupSelected = (typeof selectedCustomerIndex !== 'undefined') ? selectedCustomerIndex : -1;
-
-    // Process each invoice to generate HTML
     for (let i = 0; i < filteredInvoices.length; i++) {
       const invoice = filteredInvoices[i];
       
-      // Update progress every 5 invoices to avoid UI blocking
-      if (i % 5 === 0 || i === filteredInvoices.length - 1) {
-        printAllBtn.textContent = `جاري تجميع الفواتير... ${i + 1}/${totalCount}`;
-        // Allow UI to update
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
+      // Update progress
+      printAllBtn.textContent = `جاري الطباعة... ${i + 1}/${totalCount}`;
       
       try {
+        // Get invoice HTML using the same logic as printInvoice
         const inv = invoice;
         
+        // backup form state
+        const backup = {};
+        const fields = ['#inv_prev','#inv_curr','#inv_price_kwh','#inv_monthly','#inv_extra','#inv_extra_currency','#inv_extra_note','#inv_discount','#inv_base_currency','#inv_date','#inv_customer'];
+        fields.forEach(k=>{ const el = qs(k); backup[k]= el ? el.value : null; });
+        const backupSelected = (typeof selectedCustomerIndex !== 'undefined') ? selectedCustomerIndex : -1;
+
         // ensure customer entry exists in customers[] so renderReceiptPreview shows correct name
         let addedTempCustomer = false; 
         let custIndex = customers.findIndex(c=> String(c.id) === String(inv.customerId));
@@ -2338,91 +2184,58 @@ async function printAllInvoices() {
           addedTempCustomer = true; 
         }
 
-        // populate form with invoice values for rendering
-        if(qs('#inv_prev')) qs('#inv_prev').value = inv.prev != null ? inv.prev : '';
-        if(qs('#inv_curr')) qs('#inv_curr').value = inv.curr != null ? inv.curr : '';
-        
-        const priceUsd = inv.pricePerKwhUsd ?? inv.price_kwh ?? null;
-        if(qs('#inv_price_kwh')) qs('#inv_price_kwh').value = priceUsd != null ? priceUsd : (inv.price_kwh != null ? inv.price_kwh : qs('#inv_price_kwh').value);
-        
-        const monthly = Number((inv.fixedFeeValue != null ? inv.fixedFeeValue : (inv.monthly != null ? inv.monthly : 0)));
-        if(qs('#inv_monthly')) qs('#inv_monthly').value = monthly || '';
-        
-        const extrasArr = Array.isArray(inv.extras) ? inv.extras : (inv.extra ? [{ label: inv.extra_note || 'دفعة إضافية', value: inv.extra, currency: inv.extra_currency || 'USD'}] : []);
-        const extraTotal = extrasArr.reduce((s,e)=> s + (Number(e.value||0)), 0);
-        
-        if(qs('#inv_extra')) qs('#inv_extra').value = extraTotal || 0;
-        if(qs('#inv_extra_currency')) qs('#inv_extra_currency').value = extrasArr[0]?.currency || inv.extra_currency || qs('#inv_extra_currency').value;
-        if(qs('#inv_extra_note')) qs('#inv_extra_note').value = extrasArr[0]?.label || inv.extra_note || '';
-        if(qs('#inv_discount')) qs('#inv_discount').value = inv.discount || 0;
-        if(qs('#inv_base_currency')) qs('#inv_base_currency').value = inv.pricingMode || inv.base_currency || qs('#inv_base_currency').value;
-        if(qs('#inv_date')) qs('#inv_date').value = inv.date || qs('#inv_date').value;
-        if(qs('#inv_customer')) qs('#inv_customer').value = custIndex;
-        selectedCustomerIndex = custIndex;
+        try{
+          // populate form with invoice values for rendering
+          if(qs('#inv_prev')) qs('#inv_prev').value = inv.prev != null ? inv.prev : '';
+          if(qs('#inv_curr')) qs('#inv_curr').value = inv.curr != null ? inv.curr : '';
+          
+          const priceUsd = inv.pricePerKwhUsd ?? inv.price_kwh ?? null;
+          if(qs('#inv_price_kwh')) qs('#inv_price_kwh').value = priceUsd != null ? priceUsd : (inv.price_kwh != null ? inv.price_kwh : qs('#inv_price_kwh').value);
+          
+          const monthly = Number((inv.fixedFeeValue != null ? inv.fixedFeeValue : (inv.monthly != null ? inv.monthly : 0)));
+          if(qs('#inv_monthly')) qs('#inv_monthly').value = monthly || '';
+          
+          const extrasArr = Array.isArray(inv.extras) ? inv.extras : (inv.extra ? [{ label: inv.extra_note || 'دفعة إضافية', value: inv.extra, currency: inv.extra_currency || 'USD'}] : []);
+          const extraTotal = extrasArr.reduce((s,e)=> s + (Number(e.value||0)), 0);
+          
+          if(qs('#inv_extra')) qs('#inv_extra').value = extraTotal || 0;
+          if(qs('#inv_extra_currency')) qs('#inv_extra_currency').value = extrasArr[0]?.currency || inv.extra_currency || qs('#inv_extra_currency').value;
+          if(qs('#inv_extra_note')) qs('#inv_extra_note').value = extrasArr[0]?.label || inv.extra_note || '';
+          if(qs('#inv_discount')) qs('#inv_discount').value = inv.discount || 0;
+          if(qs('#inv_base_currency')) qs('#inv_base_currency').value = inv.pricingMode || inv.base_currency || qs('#inv_base_currency').value;
+          if(qs('#inv_date')) qs('#inv_date').value = inv.date || qs('#inv_date').value;
+          if(qs('#inv_customer')) qs('#inv_customer').value = custIndex;
+          selectedCustomerIndex = custIndex;
 
-        // regenerate preview and capture its HTML
-        if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
-        const receiptContent = qs('#receipt').innerHTML;
+           // regenerate preview and capture its HTML
+           if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
+           const receiptHtml = qs('#receipt').innerHTML;
+
+           // Print each receipt individually with auto-cut
+           console.log(`Printing receipt ${i + 1}/${totalCount} with auto-cut`);
+           await printReceiptWithAutoCut(receiptHtml);
+          
+        }finally{
+          // restore backed-up form state
+          fields.forEach(k=>{ const el = qs(k); if(el && backup[k] != null) el.value = backup[k]; });
+          selectedCustomerIndex = backupSelected;
+          if(addedTempCustomer) customers.splice(custIndex,1);
+          // refresh preview to original state
+          if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
+        }
         
-        // Wrap each invoice in a receipt container for automatic separation
-        const receiptHtml = `<div class="receipt" data-auto-cut="true">${receiptContent}</div>`;
-        allInvoicesHtml.push(receiptHtml);
-        
-        // Clean up temporary customer
-        if(addedTempCustomer) customers.splice(custIndex,1);
+         // Small delay between prints to allow printer to process
+         console.log(`Receipt ${i + 1} printed successfully with auto-cut`);
+         await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay for thermal printer
         
       } catch (error) {
-        console.error(`Error processing invoice ${invoice.id}:`, error);
+        console.error(`Error printing invoice ${invoice.id}:`, error);
         // Continue with next invoice even if one fails
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
     
-    // Restore form state
-    fields.forEach(k=>{ const el = qs(k); if(el && backup[k] != null) el.value = backup[k]; });
-    selectedCustomerIndex = backupSelected;
-    if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
-    
-    // Update progress
-    printAllBtn.textContent = `جاري الطباعة... ${totalCount} وصل`;
-    
-    // Print all invoices at once
-    if (allInvoicesHtml.length > 0) {
-      const printerType = detectPrinterType();
-      
-      console.log(`Printing ${allInvoicesHtml.length} invoices for month ${selectedMonth}`);
-      console.log('Printer type detected:', printerType);
-      console.log('Receipts will be separated with cut commands between each receipt');
-      
-      if (printerType === 'escpos') {
-        // Direct ESC/POS printing with cut commands
-        console.log('Using ESC/POS direct printing with cut commands');
-        const success = await printToESCPOS(allInvoicesHtml);
-        
-        if (success) {
-          alert(`تم طباعة ${allInvoicesHtml.length} وصل بنجاح لشهر ${monthName}\nطباعة مباشرة ESC/POS مع قص تلقائي بين الوصول`);
-        } else {
-          alert('فشل في الطباعة المباشرة. جاري المحاولة بالطريقة العادية...');
-          // Fallback to browser printing
-          const combinedHtml = `<div class="receipts-wrapper">${allInvoicesHtml.join('')}</div>`;
-          const enhancedHtml = addAutoCutSupport(combinedHtml);
-          await openPrintWindowSafe(enhancedHtml);
-        }
-      } else {
-        // Browser printing with CSS page breaks
-        console.log('Using browser printing with CSS page breaks');
-        const combinedHtml = `<div class="receipts-wrapper">${allInvoicesHtml.join('')}</div>`;
-        const enhancedHtml = addAutoCutSupport(combinedHtml);
-        
-        console.log('Each receipt will be printed on a separate page with auto-cut');
-        console.log('Using modern CSS: break-after: page + page-break-after: always');
-        console.log('Receipt structure:', allInvoicesHtml.map((html, index) => `Receipt ${index + 1}: ${html.substring(0, 100)}...`));
-        
-        await openPrintWindowSafe(enhancedHtml);
-        alert(`تم طباعة ${allInvoicesHtml.length} وصل بنجاح لشهر ${monthName}\nكل وصل في صفحة منفصلة مع قص تلقائي\nاستخدم CSS حديث: break-after: page`);
-      }
-    } else {
-      alert('لم يتم العثور على فواتير صالحة للطباعة');
-    }
+     alert(`تم الانتهاء من طباعة ${totalCount} وصل بنجاح\nكل وصل تم طباعته بعملية مستقلة مع قص تلقائي\nمناسب للطابعات الحرارية USB/COM`);
     
   } catch (error) {
     console.error('Error in printAllInvoices:', error);
