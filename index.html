@@ -2108,9 +2108,88 @@ function openPrintWindowSafe(innerHtml) {
   });
 }
 
+// Detect printer type and add appropriate cut commands
+function detectPrinterType() {
+  // Check if ESC/POS printer is available
+  if (typeof navigator !== 'undefined' && navigator.serial) {
+    return 'escpos';
+  }
+  // Check for WebUSB (ESC/POS over USB)
+  if (typeof navigator !== 'undefined' && navigator.usb) {
+    return 'escpos';
+  }
+  // Default to browser printing
+  return 'browser';
+}
+
+// Add ESC/POS cut commands to receipt HTML
+function addESCPOSCutCommands(html) {
+  // ESC/POS cut command: ESC d n (where n is number of lines to cut)
+  const cutCommand = '\x1B\x64\x00'; // Full cut
+  const partialCutCommand = '\x1B\x64\x01'; // Partial cut
+  
+  // Add cut command after each receipt
+  return html.replace(/<\/div>\s*<div class="receipt"/g, 
+    `</div>${cutCommand}<div class="receipt"`);
+}
+
+// Print directly to ESC/POS printer with cut commands
+async function printToESCPOS(receipts) {
+  try {
+    // Check if Web Serial API is available
+    if (!navigator.serial) {
+      throw new Error('Web Serial API not supported');
+    }
+    
+    // Request port access
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+    
+    const writer = port.writable.getWriter();
+    
+    // ESC/POS initialization commands
+    await writer.write(new Uint8Array([0x1B, 0x40])); // ESC @ (Initialize)
+    await writer.write(new Uint8Array([0x1B, 0x61, 0x01])); // ESC a 1 (Center alignment)
+    
+    for (let i = 0; i < receipts.length; i++) {
+      const receipt = receipts[i];
+      
+      // Convert HTML to plain text for ESC/POS
+      const textContent = receipt.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      
+      // Send receipt data
+      await writer.write(new TextEncoder().encode(textContent + '\n'));
+      
+      // Add cut command after each receipt (except the last one)
+      if (i < receipts.length - 1) {
+        await writer.write(new Uint8Array([0x1B, 0x64, 0x00])); // ESC d 0 (full cut)
+        await writer.write(new Uint8Array([0x0A, 0x0A])); // Line feeds
+      }
+    }
+    
+    // Final cut after last receipt
+    await writer.write(new Uint8Array([0x1B, 0x64, 0x00])); // ESC d 0 (full cut)
+    
+    await writer.close();
+    await port.close();
+    
+    return true;
+  } catch (error) {
+    console.error('ESC/POS printing failed:', error);
+    return false;
+  }
+}
+
 // Add auto-cut support for thermal printers
 function addAutoCutSupport(html) {
-  // Add CSS for auto-cut and print optimization
+  const printerType = detectPrinterType();
+  
+  // For ESC/POS printers, add cut commands
+  if (printerType === 'escpos') {
+    return addESCPOSCutCommands(html);
+  }
+  
+  // For browser printing, add CSS for auto-cut and print optimization
   const autoCutCSS = `
     <style>
       @media print {
@@ -2308,19 +2387,39 @@ async function printAllInvoices() {
     
     // Print all invoices at once
     if (allInvoicesHtml.length > 0) {
-      // Wrap all receipts in a container to ensure proper page breaks
-      const combinedHtml = `<div class="receipts-wrapper">${allInvoicesHtml.join('')}</div>`;
-      
-      // Add auto-cut support for thermal printers
-      const enhancedHtml = addAutoCutSupport(combinedHtml);
+      const printerType = detectPrinterType();
       
       console.log(`Printing ${allInvoicesHtml.length} invoices for month ${selectedMonth}`);
-      console.log('Each receipt will be printed on a separate page with auto-cut');
-      console.log('Using modern CSS: break-after: page + page-break-after: always');
-      console.log('Receipt structure:', allInvoicesHtml.map((html, index) => `Receipt ${index + 1}: ${html.substring(0, 100)}...`));
+      console.log('Printer type detected:', printerType);
+      console.log('Receipts will be separated with cut commands between each receipt');
       
-      await openPrintWindowSafe(enhancedHtml);
-      alert(`تم طباعة ${allInvoicesHtml.length} وصل بنجاح لشهر ${monthName}\nكل وصل في صفحة منفصلة مع قص تلقائي\nاستخدم CSS حديث: break-after: page`);
+      if (printerType === 'escpos') {
+        // Direct ESC/POS printing with cut commands
+        console.log('Using ESC/POS direct printing with cut commands');
+        const success = await printToESCPOS(allInvoicesHtml);
+        
+        if (success) {
+          alert(`تم طباعة ${allInvoicesHtml.length} وصل بنجاح لشهر ${monthName}\nطباعة مباشرة ESC/POS مع قص تلقائي بين الوصول`);
+        } else {
+          alert('فشل في الطباعة المباشرة. جاري المحاولة بالطريقة العادية...');
+          // Fallback to browser printing
+          const combinedHtml = `<div class="receipts-wrapper">${allInvoicesHtml.join('')}</div>`;
+          const enhancedHtml = addAutoCutSupport(combinedHtml);
+          await openPrintWindowSafe(enhancedHtml);
+        }
+      } else {
+        // Browser printing with CSS page breaks
+        console.log('Using browser printing with CSS page breaks');
+        const combinedHtml = `<div class="receipts-wrapper">${allInvoicesHtml.join('')}</div>`;
+        const enhancedHtml = addAutoCutSupport(combinedHtml);
+        
+        console.log('Each receipt will be printed on a separate page with auto-cut');
+        console.log('Using modern CSS: break-after: page + page-break-after: always');
+        console.log('Receipt structure:', allInvoicesHtml.map((html, index) => `Receipt ${index + 1}: ${html.substring(0, 100)}...`));
+        
+        await openPrintWindowSafe(enhancedHtml);
+        alert(`تم طباعة ${allInvoicesHtml.length} وصل بنجاح لشهر ${monthName}\nكل وصل في صفحة منفصلة مع قص تلقائي\nاستخدم CSS حديث: break-after: page`);
+      }
     } else {
       alert('لم يتم العثور على فواتير صالحة للطباعة');
     }
