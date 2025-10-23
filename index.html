@@ -116,6 +116,30 @@
       page-break-after: auto;
     }
     
+    /* فصل تلقائي لكل وصل */
+    .receipt {
+      page-break-after: always !important;
+      break-after: page !important;
+      margin-bottom: 0 !important;
+      padding-bottom: 0 !important;
+    }
+    
+    /* تجنب صفحة فارغة بعد آخر وصل */
+    .receipt:last-child {
+      page-break-after: avoid !important;
+      break-after: avoid !important;
+    }
+    
+    /* تحسين الطباعة للطابعات الحرارية */
+    .receipt {
+      width: 100% !important;
+      max-width: 80mm !important;
+      margin: 0 auto !important;
+      padding: 0 !important;
+      border: none !important;
+      box-shadow: none !important;
+    }
+    
     /* قص تلقائي للطابعات الحرارية */
     .invoice-page[data-auto-cut="true"] {
       position: relative;
@@ -2106,8 +2130,42 @@ function addAutoCutSupport(html) {
           break-after: page !important;
         }
         
+        /* فصل تلقائي لكل وصل */
+        .receipt {
+          page-break-after: always !important;
+          break-after: page !important;
+          margin-bottom: 0 !important;
+          padding-bottom: 0 !important;
+          width: 100% !important;
+          max-width: 80mm !important;
+          margin: 0 auto !important;
+          padding: 0 !important;
+          border: none !important;
+          box-shadow: none !important;
+          display: block !important;
+          position: relative !important;
+        }
+        
+        /* تجنب صفحة فارغة بعد آخر وصل */
+        .receipt:last-child {
+          page-break-after: avoid !important;
+          break-after: avoid !important;
+        }
+        
+        /* إجبار فاصل صفحة بعد كل وصل عدا الأخير */
+        .receipt:not(:last-child) {
+          page-break-after: always !important;
+          break-after: page !important;
+        }
+        
+        /* تحسين الطباعة للطابعات الحرارية */
+        .receipt {
+          page-break-inside: avoid !important;
+          break-inside: avoid !important;
+        }
+        
         /* تحسين الخطوط للطباعة */
-        body, .invoice-page {
+        body, .invoice-page, .receipt {
           font-family: 'Courier New', monospace !important;
           font-size: 10px !important;
           line-height: 1.2 !important;
@@ -2200,12 +2258,11 @@ async function printAllInvoices() {
 
         // regenerate preview and capture its HTML
         if(typeof renderReceiptPreview === 'function') renderReceiptPreview();
-        const receiptHtml = qs('#receipt').innerHTML;
+        const receiptContent = qs('#receipt').innerHTML;
         
-        // Wrap each invoice in a page container with proper class
-        // Add auto-cut marker for thermal printers
-        const invoicePageHtml = `<div class="invoice-page" data-auto-cut="true">${receiptHtml}</div>`;
-        allInvoicesHtml.push(invoicePageHtml);
+        // Wrap each invoice in a receipt container for automatic separation
+        const receiptHtml = `<div class="receipt" data-auto-cut="true">${receiptContent}</div>`;
+        allInvoicesHtml.push(receiptHtml);
         
         // Clean up temporary customer
         if(addedTempCustomer) customers.splice(custIndex,1);
@@ -2232,9 +2289,11 @@ async function printAllInvoices() {
       const enhancedHtml = addAutoCutSupport(combinedHtml);
       
       console.log(`Printing ${allInvoicesHtml.length} invoices for month ${selectedMonth}`);
+      console.log('Each receipt will be printed on a separate page with auto-cut');
+      console.log('Receipt structure:', allInvoicesHtml.map((html, index) => `Receipt ${index + 1}: ${html.substring(0, 100)}...`));
       
       await openPrintWindowSafe(enhancedHtml);
-      alert(`تم طباعة ${allInvoicesHtml.length} وصل بنجاح لشهر ${monthName}`);
+      alert(`تم طباعة ${allInvoicesHtml.length} وصل بنجاح لشهر ${monthName}\nكل وصل في صفحة منفصلة مع قص تلقائي`);
     } else {
       alert('لم يتم العثور على فواتير صالحة للطباعة');
     }
